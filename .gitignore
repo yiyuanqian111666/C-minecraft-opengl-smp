@@ -1,0 +1,10 @@
+# Visual Studio 临时文件
+*.obj
+*.exe
+*.pdb
+*.user
+*.vcxproj.user
+.vs/
+x64/
+Debug/
+Release/
