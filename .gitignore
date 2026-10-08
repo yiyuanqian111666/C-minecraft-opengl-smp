@@ -1,10 +1,32 @@
-# Visual Studio 临时文件
+# Visual Studio 临时文件与构建目录
 *.obj
 *.exe
 *.pdb
 *.user
 *.vcxproj.user
+*.aps
+*.idb
+*.ncb
+*.pch
+*.sbr
+*.tlog
+*.suo
+*.opensdf
+*.sdf
+*.cache
+*.ilk
+*.ipch
+
+# 编译生成目录
 .vs/
 x64/
+Win32/
 Debug/
 Release/
+ipch/
+
+# 日志与操作系统临时文件
+*.log
+*.tmp
+.DS_Store
+Thumbs.db

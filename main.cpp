@@ -1,5 +1,5 @@
 /**********************************************************
- * Minecraft Java SMP - 边缘潜行防跌落、挖掘CD、画质与封装优化版
+ * Minecraft Java SMP - 终极性能渲染与重锤弹飞完美版
  **********************************************************/
 #define _CRT_SECURE_NO_WARNINGS
 
@@ -36,6 +36,7 @@ enum ItemType {
     ITEM_NONE = 0,
     ITEM_DIAMOND_SWORD,
     ITEM_NETHERITE_SWORD,
+    ITEM_NETHERITE_AXE,
     ITEM_MACE,
     ITEM_GOLDEN_APPLE,
     ITEM_SHIELD,
@@ -66,7 +67,7 @@ struct Particle {
     float r, g, b;
 };
 
-#define MAX_PARTICLES 1000
+#define MAX_PARTICLES 1800
 Particle particles[MAX_PARTICLES];
 
 struct DroppedItem {
@@ -78,7 +79,7 @@ struct DroppedItem {
     int life;
 };
 
-#define MAX_DROPS 100
+#define MAX_DROPS 200
 DroppedItem droppedItems[MAX_DROPS];
 
 struct VoxelBlock {
@@ -86,9 +87,18 @@ struct VoxelBlock {
     float r, g, b;
 };
 
-#define WORLD_SIZE 32
-#define WORLD_HEIGHT 12
+// 扩大世界规模与高低地形
+#define WORLD_SIZE 52
+#define WORLD_HEIGHT 20
 VoxelBlock world[WORLD_SIZE][WORLD_HEIGHT][WORLD_SIZE];
+
+// 性能渲染配置枚举
+enum RenderQuality {
+    QUALITY_LOW = 1,
+    QUALITY_MEDIUM = 2,
+    QUALITY_HIGH = 3
+};
+RenderQuality currentRenderQuality = QUALITY_HIGH; // 可通过按键或配置调整渲染级别
 
 struct Player {
     Vector3 position;
@@ -99,6 +109,7 @@ struct Player {
     float pitch;
     bool isSprinting;
     bool isBlocking;
+    int shieldCooldown;
     bool isCrouching;
     bool isSwinging;
     int swingAnim;
@@ -106,8 +117,14 @@ struct Player {
     InventoryItem offhand;
     int selectedSlot;
     int eatTimer;
+    int eatDurationNeeded;
+
     int attackCooldown;
-    int miningCooldown; // 挖掘方块冷却
+    int maxAttackCooldown;
+    bool isMining;
+    int miningProgress;
+    int targetMiningX, targetMiningY, targetMiningZ;
+
     float fallDistance;
     bool thirdPersonView;
 };
@@ -116,12 +133,14 @@ struct Bot {
     Vector3 position;
     Vector3 velocity;
     float health;
+    float absorption;
     bool isDead;
     int respawnTimer;
     int attackCooldown;
     bool isSwinging;
     int swingAnim;
     bool isBlocking;
+    int shieldCooldown;
     int blockTimer;
     int strafeTimer;
     float strafeDir;
@@ -138,6 +157,7 @@ std::vector<Bot> bots;
 int score = 0;
 int comboCount = 0;
 HWND g_hWnd = NULL;
+bool showDebugHitboxes = false;
 
 /**************************
  * Function Declarations
@@ -149,11 +169,12 @@ void DrawMCCharacter(Bot* b, int swingFrame, bool isBotBlocking, int itemInHand)
 void DrawPlayerFirstPersonHands();
 void DrawDetailedDiamondSword();
 void DrawDetailedNetheriteSword();
+void DrawDetailedNetheriteAxe();
 void DrawDetailedMace();
 void DrawDetailedShield();
 void DrawGoldenAppleItem();
 void DrawCrosshair();
-void DrawWorld();
+void DrawWorldOptimized(); // 性能分级地形渲染
 void DrawDroppedItems();
 void ProcessInput();
 void DrawHUD();
@@ -165,6 +186,7 @@ bool CheckBoxCollisionWithWorld(float x, float y, float z, float width, float he
 BoundingBox GetBotBoundingBox(const Bot* b);
 bool RayIntersectsBox(Vector3 rayOrigin, Vector3 rayDir, BoundingBox box, float* outDist);
 bool RayCastBlock(Vector3 origin, Vector3 dir, float maxDist, int* hitX, int* hitY, int* hitZ, int* prevX, int* prevY, int* prevZ);
+void DrawWireBox(float x, float y, float z, float dx, float dy, float dz, float r, float g, float b);
 
 /**************************
  * Sound & Particle Helper
@@ -178,29 +200,44 @@ void SpawnParticleEx(float x, float y, float z, float r, float g, float b, bool 
         if (!particles[i].active) {
             particles[i].active = true;
             particles[i].position = { x, y, z };
-            float scale = isHeavy ? 2.5f : 1.0f;
+            float scale = isHeavy ? 3.0f : 1.0f;
             particles[i].velocity = {
-                ((float)(rand() % 60 - 30)) / 60.0f * scale,
-                ((float)(rand() % 60)) / 50.0f * scale,
-                ((float)(rand() % 60 - 30)) / 60.0f * scale
+                ((float)(rand() % 60 - 30)) / 50.0f * scale,
+                ((float)(rand() % 60)) / 40.0f * scale,
+                ((float)(rand() % 60 - 30)) / 50.0f * scale
             };
-            particles[i].life = isHeavy ? 50 : 25;
+            particles[i].life = isHeavy ? 60 : 25;
             particles[i].r = r; particles[i].g = g; particles[i].b = b;
             break;
         }
     }
 }
 
+void SpawnJumpCritParticles(float x, float y, float z) {
+    for (int i = 0; i < 25; i++) {
+        for (int p = 0; p < MAX_PARTICLES; p++) {
+            if (!particles[p].active) {
+                particles[p].active = true;
+                particles[p].position = { x + ((rand() % 20 - 10) / 50.0f), y + ((rand() % 20) / 30.0f), z + ((rand() % 20 - 10) / 50.0f) };
+                particles[p].velocity = { ((float)(rand() % 40 - 20)) / 30.0f, 0.15f + ((float)(rand() % 30)) / 40.0f, ((float)(rand() % 40 - 20)) / 30.0f };
+                particles[p].life = 45;
+                particles[p].r = 1.0f; particles[p].g = 0.95f; particles[p].b = 0.4f;
+                break;
+            }
+        }
+    }
+}
+
 void SpawnWindBurstParticles(float x, float y, float z) {
-    for (int i = 0; i < 30; i++) {
-        float angle = ((float)i / 30.0f) * 2.0f * (float)M_PI;
+    for (int i = 0; i < 45; i++) {
+        float angle = ((float)i / 45.0f) * 2.0f * (float)M_PI;
         for (int p = 0; p < MAX_PARTICLES; p++) {
             if (!particles[p].active) {
                 particles[p].active = true;
                 particles[p].position = { x, y, z };
-                particles[p].velocity = { cosf(angle) * 0.35f, 0.2f + ((float)(rand() % 20)) / 50.0f, sinf(angle) * 0.35f };
-                particles[p].life = 35;
-                particles[p].r = 0.85f; particles[p].g = 0.92f; particles[p].b = 0.98f;
+                particles[p].velocity = { cosf(angle) * 0.55f, 0.35f + ((float)(rand() % 25)) / 40.0f, sinf(angle) * 0.55f };
+                particles[p].life = 50;
+                particles[p].r = 0.85f; particles[p].g = 0.95f; particles[p].b = 1.0f;
                 break;
             }
         }
@@ -222,7 +259,7 @@ void SpawnDroppedItem(float x, float y, float z, ItemType type, int count) {
 }
 
 /**************************
- * Voxel Box Drawing (画质与抗曝光调优)
+ * Voxel & Wireframe Box Drawing
  **************************/
 void DrawBox(float x, float y, float z, float dx, float dy, float dz, float r, float g, float b) {
     glPushMatrix();
@@ -230,34 +267,61 @@ void DrawBox(float x, float y, float z, float dx, float dy, float dz, float r, f
     glScalef(dx, dy, dz);
 
     glBegin(GL_QUADS);
-    // Front
     glColor3f(r * 0.85f, g * 0.85f, b * 0.85f);
     glVertex3f(-0.5f, -0.5f, 0.5f); glVertex3f(0.5f, -0.5f, 0.5f);
     glVertex3f(0.5f, 0.5f, 0.5f); glVertex3f(-0.5f, 0.5f, 0.5f);
-    // Back
+
     glColor3f(r * 0.45f, g * 0.45f, b * 0.45f);
     glVertex3f(-0.5f, -0.5f, -0.5f); glVertex3f(-0.5f, 0.5f, -0.5f);
     glVertex3f(0.5f, 0.5f, -0.5f); glVertex3f(0.5f, -0.5f, -0.5f);
-    // Top
+
     float rTop = (r * 1.1f > 0.95f) ? 0.95f : (r * 1.1f);
     float gTop = (g * 1.1f > 0.95f) ? 0.95f : (g * 1.1f);
     float bTop = (b * 1.1f > 0.95f) ? 0.95f : (b * 1.1f);
     glColor3f(rTop, gTop, bTop);
     glVertex3f(-0.5f, 0.5f, -0.5f); glVertex3f(-0.5f, 0.5f, 0.5f);
     glVertex3f(0.5f, 0.5f, 0.5f); glVertex3f(0.5f, 0.5f, -0.5f);
-    // Bottom
+
     glColor3f(r * 0.2f, g * 0.2f, b * 0.2f);
     glVertex3f(-0.5f, -0.5f, -0.5f); glVertex3f(0.5f, -0.5f, -0.5f);
     glVertex3f(0.5f, -0.5f, 0.5f); glVertex3f(-0.5f, -0.5f, 0.5f);
-    // Right
+
+    glColor3f(r * 0.7f, g * 0.7f, g * 0.7f); // Fixed typo to b
     glColor3f(r * 0.7f, g * 0.7f, b * 0.7f);
     glVertex3f(0.5f, -0.5f, -0.5f); glVertex3f(0.5f, 0.5f, -0.5f);
-    glVertex3f(0.5f, 0.5f, 0.5f); glVertex3f(0.5f, -0.5f, 0.5f);
-    // Left
+    glVertex3f(0.5f, -0.5f, 0.5f); glVertex3f(0.5f, 0.5f, 0.5f);
+
     glColor3f(r * 0.55f, g * 0.55f, b * 0.55f);
     glVertex3f(-0.5f, -0.5f, -0.5f); glVertex3f(-0.5f, -0.5f, 0.5f);
     glVertex3f(-0.5f, 0.5f, 0.5f); glVertex3f(-0.5f, 0.5f, -0.5f);
     glEnd();
+    glPopMatrix();
+}
+
+void DrawWireBox(float x, float y, float z, float dx, float dy, float dz, float r, float g, float b) {
+    glPushMatrix();
+    glTranslatef(x, y, z);
+    glScalef(dx, dy, dz);
+    glColor3f(r, g, b);
+    glLineWidth(2.5f);
+
+    glBegin(GL_LINES);
+    glVertex3f(-0.5f, -0.5f, -0.5f); glVertex3f(0.5f, -0.5f, -0.5f);
+    glVertex3f(0.5f, -0.5f, -0.5f); glVertex3f(0.5f, -0.5f, 0.5f);
+    glVertex3f(0.5f, -0.5f, 0.5f); glVertex3f(-0.5f, -0.5f, 0.5f);
+    glVertex3f(-0.5f, -0.5f, 0.5f); glVertex3f(-0.5f, -0.5f, -0.5f);
+
+    glVertex3f(-0.5f, 0.5f, -0.5f); glVertex3f(0.5f, 0.5f, -0.5f);
+    glVertex3f(0.5f, 0.5f, -0.5f); glVertex3f(0.5f, 0.5f, 0.5f);
+    glVertex3f(0.5f, 0.5f, 0.5f); glVertex3f(-0.5f, 0.5f, 0.5f);
+    glVertex3f(-0.5f, 0.5f, 0.5f); glVertex3f(-0.5f, 0.5f, -0.5f);
+
+    glVertex3f(-0.5f, -0.5f, -0.5f); glVertex3f(-0.5f, 0.5f, -0.5f);
+    glVertex3f(0.5f, -0.5f, -0.5f); glVertex3f(0.5f, 0.5f, -0.5f);
+    glVertex3f(0.5f, -0.5f, 0.5f); glVertex3f(0.5f, 0.5f, 0.5f);
+    glVertex3f(-0.5f, -0.5f, 0.5f); glVertex3f(-0.5f, 0.5f, 0.5f);
+    glEnd();
+
     glPopMatrix();
 }
 
@@ -272,8 +336,8 @@ bool CheckBoxCollisionWithWorld(float x, float y, float z, float width, float he
 
     int startX = (int)floorf(minX + (float)(WORLD_SIZE / 2) + 0.5f);
     int endX = (int)floorf(maxX + (float)(WORLD_SIZE / 2) + 0.5f);
-    int startY = (int)floorf(minY + 2.0f + 0.5f);
-    int endY = (int)floorf(maxY + 2.0f + 0.5f);
+    int startY = (int)floorf(minY + 4.0f + 0.5f);
+    int endY = (int)floorf(maxY + 4.0f + 0.5f);
     int startZ = (int)floorf(minZ + (float)(WORLD_SIZE / 2) + 0.5f);
     int endZ = (int)floorf(maxZ + (float)(WORLD_SIZE / 2) + 0.5f);
 
@@ -283,7 +347,7 @@ bool CheckBoxCollisionWithWorld(float x, float y, float z, float width, float he
                 if (ix >= 0 && ix < WORLD_SIZE && iy >= 0 && iy < WORLD_HEIGHT && iz >= 0 && iz < WORLD_SIZE) {
                     if (world[ix][iy][iz].type != 0) {
                         float bx = (float)ix - (float)(WORLD_SIZE / 2);
-                        float by = (float)iy - 2.0f;
+                        float by = (float)iy - 4.0f;
                         float bz = (float)iz - (float)(WORLD_SIZE / 2);
 
                         if (minX < bx + 0.5f && maxX > bx - 0.5f &&
@@ -301,8 +365,8 @@ bool CheckBoxCollisionWithWorld(float x, float y, float z, float width, float he
 
 BoundingBox GetBotBoundingBox(const Bot* b) {
     BoundingBox box;
-    box.min = { b->position.x - 0.3f, b->position.y, b->position.z - 0.3f };
-    box.max = { b->position.x + 0.3f, b->position.y + 1.8f, b->position.z + 0.3f };
+    box.min = { b->position.x - 0.32f, b->position.y, b->position.z - 0.32f };
+    box.max = { b->position.x + 0.32f, b->position.y + 1.8f, b->position.z + 0.32f };
     return box;
 }
 
@@ -338,13 +402,13 @@ bool RayCastBlock(Vector3 origin, Vector3 dir, float maxDist, int* hitX, int* hi
     int lastX = -1, lastY = -1, lastZ = -1;
 
     while (currDist < maxDist) {
-        currDist += 0.05f;
+        currDist += 0.04f;
         float cx = origin.x + dir.x * currDist;
         float cy = origin.y + dir.y * currDist;
         float cz = origin.z + dir.z * currDist;
 
         int ix = (int)floorf(cx + (float)(WORLD_SIZE / 2) + 0.5f);
-        int iy = (int)floorf(cy + 2.0f + 0.5f);
+        int iy = (int)floorf(cy + 4.0f + 0.5f);
         int iz = (int)floorf(cz + (float)(WORLD_SIZE / 2) + 0.5f);
 
         if (ix >= 0 && ix < WORLD_SIZE && iy >= 0 && iy < WORLD_HEIGHT && iz >= 0 && iz < WORLD_SIZE) {
@@ -360,7 +424,7 @@ bool RayCastBlock(Vector3 origin, Vector3 dir, float maxDist, int* hitX, int* hi
 }
 
 /**************************
- * 世界生成
+ * 世界生成与性能分级渲染
  **************************/
 void InitWorld() {
     for (int x = 0; x < WORLD_SIZE; x++) {
@@ -373,14 +437,17 @@ void InitWorld() {
 
     for (int x = 0; x < WORLD_SIZE; x++) {
         for (int z = 0; z < WORLD_SIZE; z++) {
-            float heightFactor = sinf((float)x * 0.3f) * cosf((float)z * 0.3f) * 1.5f + 3.0f;
-            int surfaceY = (int)heightFactor;
+            float h1 = sinf((float)x * 0.18f) * cosf((float)z * 0.18f) * 3.2f;
+            float h2 = sinf((float)x * 0.08f + 1.2f) * 2.5f;
+            int surfaceY = (int)(4.0f + h1 + h2);
+            if (surfaceY < 2) surfaceY = 2;
+            if (surfaceY >= WORLD_HEIGHT - 2) surfaceY = WORLD_HEIGHT - 3;
 
             for (int y = 0; y <= surfaceY; y++) {
                 if (y == surfaceY) {
                     world[x][y][z] = { 1, 0.35f, 0.65f, 0.25f };
                 }
-                else if (y > surfaceY - 2) {
+                else if (y > surfaceY - 3) {
                     world[x][y][z] = { 2, 0.48f, 0.32f, 0.18f };
                 }
                 else {
@@ -391,13 +458,34 @@ void InitWorld() {
     }
 }
 
-void DrawWorld() {
-    for (int x = 0; x < WORLD_SIZE; x++) {
+// 性能分级渲染地形：根据当前质量设置（低/中/高）裁剪渲染距离和跳过部分方块
+void DrawWorldOptimized() {
+    int pChunkX = (int)floorf(player.position.x + (float)(WORLD_SIZE / 2) + 0.5f);
+    int pChunkZ = (int)floorf(player.position.z + (float)(WORLD_SIZE / 2) + 0.5f);
+
+    int renderRadius = 14; // 默认高质量视距
+    int step = 1;
+
+    if (currentRenderQuality == QUALITY_LOW) {
+        renderRadius = 8;
+        step = 2; // 低配下每隔一个方块渲染一次，大幅提升帧率
+    }
+    else if (currentRenderQuality == QUALITY_MEDIUM) {
+        renderRadius = 11;
+        step = 1;
+    }
+
+    int startX = max(0, pChunkX - renderRadius);
+    int endX = min(WORLD_SIZE, pChunkX + renderRadius);
+    int startZ = max(0, pChunkZ - renderRadius);
+    int endZ = min(WORLD_SIZE, pChunkZ + renderRadius);
+
+    for (int x = startX; x < endX; x += step) {
         for (int y = 0; y < WORLD_HEIGHT; y++) {
-            for (int z = 0; z < WORLD_SIZE; z++) {
+            for (int z = startZ; z < endZ; z += step) {
                 if (world[x][y][z].type != 0) {
                     VoxelBlock& b = world[x][y][z];
-                    DrawBox((float)x - (float)(WORLD_SIZE / 2), (float)y - 2.0f, (float)z - (float)(WORLD_SIZE / 2), 1.0f, 1.0f, 1.0f, b.r, b.g, b.b);
+                    DrawBox((float)x - (float)(WORLD_SIZE / 2), (float)y - 4.0f, (float)z - (float)(WORLD_SIZE / 2), (float)step, 1.0f, (float)step, b.r, b.g, b.b);
                 }
             }
         }
@@ -419,22 +507,25 @@ void DrawDroppedItems() {
  **************************/
 void SpawnBots() {
     bots.clear();
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < 6; i++) {
         Bot b;
-        b.position = { (float)((i - 1.5f) * 4.0f), 3.5f, (float)(-5.0f - (i % 2) * 3.0f) };
+        float angleOffset = ((float)i / 6.0f) * 2.0f * (float)M_PI;
+        b.position = { cosf(angleOffset) * 8.0f, 8.0f, sinf(angleOffset) * 8.0f };
         b.velocity = { 0.0f, 0.0f, 0.0f };
         b.health = 20.0f;
+        b.absorption = 0.0f;
         b.isDead = false;
         b.respawnTimer = 0;
         b.attackCooldown = 0;
         b.isSwinging = false;
         b.swingAnim = 0;
         b.isBlocking = false;
+        b.shieldCooldown = 0;
         b.blockTimer = 0;
         b.strafeTimer = 0;
         b.strafeDir = (i % 2 == 0) ? 1.0f : -1.0f;
         b.decisionTimer = rand() % 15;
-        b.activeSlot = (i % 2 == 0) ? 2 : 0;
+        b.activeSlot = (i % 3 == 0) ? 2 : ((i % 3 == 1) ? 3 : 0);
         b.eatCooldown = 0;
         b.hitStunTimer = 0;
         b.targetId = -1;
@@ -451,13 +542,15 @@ void UpdateBot(int botIndex) {
         if (b->respawnTimer <= 0) {
             b->isDead = false;
             b->health = 20.0f;
-            b->position = { (float)((botIndex - 1.5f) * 4.0f), 5.0f, (float)(-4.0f) };
+            b->absorption = 4.0f;
+            b->position = { (float)((rand() % 14 - 7)), 8.0f, (float)((rand() % 14 - 7)) };
             b->velocity = { 0, 0, 0 };
         }
         return;
     }
 
     if (b->hitStunTimer > 0) b->hitStunTimer--;
+    if (b->shieldCooldown > 0) b->shieldCooldown--;
 
     b->decisionTimer++;
     if (b->decisionTimer > 15) {
@@ -477,15 +570,14 @@ void UpdateBot(int botIndex) {
         }
         b->targetId = bestTarget;
 
-        if (b->health < 10.0f && b->eatCooldown == 0 && (rand() % 100 < 75)) {
+        if (b->health < 10.0f && b->eatCooldown == 0 && (rand() % 100 < 80)) {
             b->health = (b->health + 8.0f < 20.0f) ? (b->health + 8.0f) : 20.0f;
-            b->eatCooldown = 150;
-        }
-        else {
-            b->activeSlot = (rand() % 100 < 50) ? 2 : 0;
+            b->absorption = 8.0f;
+            b->eatCooldown = 120;
+            PlayGameSound("eat.wav");
         }
 
-        if (closestDist < 3.2f && (rand() % 100 < 65)) {
+        if (closestDist < 3.2f && (rand() % 100 < 70) && b->shieldCooldown == 0) {
             b->isBlocking = true;
             b->blockTimer = 25;
         }
@@ -524,20 +616,20 @@ void UpdateBot(int botIndex) {
     float moveZ = (fZ * 0.75f + sZ * 0.25f) * speed;
 
     b->position.x += moveX + b->velocity.x;
-    if (CheckBoxCollisionWithWorld(b->position.x, b->position.y, b->position.z, 0.6f, 1.8f)) {
+    if (CheckBoxCollisionWithWorld(b->position.x, b->position.y, b->position.z, 0.64f, 1.8f)) {
         b->position.x -= (moveX + b->velocity.x);
         b->velocity.y = 0.28f;
     }
 
     b->position.z += moveZ + b->velocity.z;
-    if (CheckBoxCollisionWithWorld(b->position.x, b->position.y, b->position.z, 0.6f, 1.8f)) {
+    if (CheckBoxCollisionWithWorld(b->position.x, b->position.y, b->position.z, 0.64f, 1.8f)) {
         b->position.z -= (moveZ + b->velocity.z);
         b->velocity.y = 0.28f;
     }
 
     b->velocity.y -= 0.025f;
     b->position.y += b->velocity.y;
-    if (CheckBoxCollisionWithWorld(b->position.x, b->position.y, b->position.z, 0.6f, 1.8f)) {
+    if (CheckBoxCollisionWithWorld(b->position.x, b->position.y, b->position.z, 0.64f, 1.8f)) {
         b->position.y -= b->velocity.y;
         b->velocity.y = 0.0f;
     }
@@ -551,31 +643,92 @@ void UpdateBot(int botIndex) {
         if (b->swingAnim > 10) { b->isSwinging = false; b->swingAnim = 0; }
     }
 
-    if (dist <= 3.0f && b->attackCooldown == 0) {
-        float dmg = (b->activeSlot == 2 ? 5.0f : 2.5f);
-        b->attackCooldown = 30;
-        b->isSwinging = true;
+    if (dist <= 3.2f && b->attackCooldown == 0) {
+        Vector3 botEyePos = { b->position.x, b->position.y + 1.5f, b->position.z };
+        Vector3 botDir = { fX, 0.0f, fZ };
 
+        bool hasLineOfSight = false;
         if (b->targetId == -1) {
-            if (player.isBlocking || (player.offhand.type == ITEM_SHIELD && player.isBlocking)) dmg *= 0.2f;
-            if (player.absorption > 0.0f) {
-                if (player.absorption >= dmg) { player.absorption -= dmg; dmg = 0.0f; }
-                else { dmg -= player.absorption; player.absorption = 0.0f; }
-            }
-            player.health -= dmg;
-            if (player.health <= 0) {
-                player.health = 20.0f;
-                player.absorption = 4.0f;
-                player.position = { 0.0f, 6.0f, 4.0f };
+            BoundingBox pBox = { {player.position.x - 0.32f, player.position.y, player.position.z - 0.32f}, {player.position.x + 0.32f, player.position.y + 1.8f, player.position.z + 0.32f} };
+            float hitD = 0.0f;
+            if (RayIntersectsBox(botEyePos, botDir, pBox, &hitD) && hitD <= 3.5f) {
+                hasLineOfSight = true;
             }
         }
         else {
             Bot* targetBot = &bots[b->targetId];
             if (!targetBot->isDead) {
-                if (targetBot->isBlocking) dmg *= 0.2f;
-                targetBot->health -= dmg;
-                targetBot->hitStunTimer = 15;
-                SpawnParticleEx(targetBot->position.x, targetBot->position.y + 1.0f, targetBot->position.z, 0.9f, 0.1f, 0.1f, false);
+                BoundingBox tBox = GetBotBoundingBox(targetBot);
+                float hitD = 0.0f;
+                if (RayIntersectsBox(botEyePos, botDir, tBox, &hitD) && hitD <= 3.5f) {
+                    hasLineOfSight = true;
+                }
+            }
+        }
+
+        if (hasLineOfSight) {
+            float dmg = 3.5f;
+            bool isAxe = (b->activeSlot == 3);
+            bool isMace = (b->activeSlot == 2);
+
+            b->attackCooldown = 30;
+            b->isSwinging = true;
+            PlayGameSound("swing.wav");
+
+            if (b->targetId == -1) {
+                bool playerIsShielding = (player.isBlocking || (player.offhand.type == ITEM_SHIELD && player.isBlocking)) && player.shieldCooldown == 0;
+                if (playerIsShielding) {
+                    if (isAxe || isMace) {
+                        player.shieldCooldown = 90;
+                        player.isBlocking = false;
+                    }
+                    else {
+                        dmg = 0.0f;
+                    }
+                }
+
+                if (player.absorption > 0.0f && dmg > 0.0f) {
+                    if (player.absorption >= dmg) { player.absorption -= dmg; dmg = 0.0f; }
+                    else { dmg -= player.absorption; player.absorption = 0.0f; }
+                }
+                player.health -= dmg;
+                player.velocity.y = 0.15f;
+                player.velocity.x += fX * (isAxe ? 0.35f : 0.12f);
+                player.velocity.z += fZ * (isAxe ? 0.35f : 0.12f);
+
+                PlayGameSound("hit.wav");
+                if (player.health <= 0) {
+                    player.health = 20.0f;
+                    player.absorption = 4.0f;
+                    player.position = { 0.0f, 10.0f, 4.0f };
+                }
+            }
+            else {
+                Bot* targetBot = &bots[b->targetId];
+                if (!targetBot->isDead) {
+                    bool targetShielding = targetBot->isBlocking && targetBot->shieldCooldown == 0;
+                    if (targetShielding) {
+                        if (isAxe || isMace) {
+                            targetBot->shieldCooldown = 90;
+                            targetBot->isBlocking = false;
+                        }
+                        else {
+                            dmg = 0.0f;
+                        }
+                    }
+
+                    if (targetBot->absorption > 0.0f && dmg > 0.0f) {
+                        if (targetBot->absorption >= dmg) { targetBot->absorption -= dmg; dmg = 0.0f; }
+                        else { dmg -= targetBot->absorption; targetBot->absorption = 0.0f; }
+                    }
+                    targetBot->health -= dmg;
+                    targetBot->hitStunTimer = 15;
+                    targetBot->velocity.y = 0.18f;
+                    targetBot->velocity.x += fX * (isAxe ? 0.35f : 0.15f);
+                    targetBot->velocity.z += fZ * (isAxe ? 0.35f : 0.15f);
+                    PlayGameSound("hit.wav");
+                    SpawnParticleEx(targetBot->position.x, targetBot->position.y + 1.0f, targetBot->position.z, 0.9f, 0.1f, 0.1f, false);
+                }
             }
         }
     }
@@ -593,7 +746,7 @@ void CheckCollisions() {
             droppedItems[i].position.y += droppedItems[i].velocity.y;
             droppedItems[i].velocity.y -= 0.012f;
             int ix = (int)floorf(droppedItems[i].position.x + (float)(WORLD_SIZE / 2) + 0.5f);
-            int iy = (int)floorf(droppedItems[i].position.y + 2.0f + 0.5f);
+            int iy = (int)floorf(droppedItems[i].position.y + 4.0f + 0.5f);
             int iz = (int)floorf(droppedItems[i].position.z + (float)(WORLD_SIZE / 2) + 0.5f);
             if (iy >= 0 && iy < WORLD_HEIGHT && ix >= 0 && ix < WORLD_SIZE && iz >= 0 && iz < WORLD_SIZE) {
                 if (world[ix][iy][iz].type != 0) {
@@ -627,7 +780,7 @@ void CheckCollisions() {
 }
 
 /**********************************************************
- * 游戏主循环封装类 (Game Main Loop Packaging)
+ * 游戏主循环引擎类
  **********************************************************/
 class MinecraftGameEngine {
 public:
@@ -639,11 +792,11 @@ public:
         wc.hIcon = LoadIcon(NULL, IDI_APPLICATION);
         wc.hCursor = LoadCursor(NULL, IDC_ARROW);
         wc.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);
-        wc.lpszClassName = "SMPPvPEngineJavaGame";
+        wc.lpszClassName = "SMPPvPEngineMaceWindBurstOptimized";
         RegisterClass(&wc);
 
         g_hWnd = CreateWindow(
-            "SMPPvPEngineJavaGame", "Minecraft Java SMP - Edge Sneak, Mining CD & Anti-Exposure",
+            "SMPPvPEngineMaceWindBurstOptimized", "Minecraft Java SMP - Mace Wind Burst & Optimized Terrain",
             WS_CAPTION | WS_POPUPWINDOW | WS_VISIBLE,
             100, 100, 1024, 768,
             NULL, NULL, hInstance, NULL);
@@ -659,12 +812,12 @@ public:
         glEnable(GL_DEPTH_TEST);
         glDepthFunc(GL_LESS);
         glEnable(GL_FOG);
-        
+
         GLfloat fogColor[4] = { 0.42f, 0.58f, 0.75f, 1.0f };
         glFogfv(GL_FOG_COLOR, fogColor);
         glFogi(GL_FOG_MODE, GL_LINEAR);
-        glFogf(GL_FOG_START, 15.0f);
-        glFogf(GL_FOG_END, 38.0f);
+        glFogf(GL_FOG_START, 20.0f);
+        glFogf(GL_FOG_END, 45.0f);
 
         ShowCursor(FALSE);
         return true;
@@ -674,7 +827,7 @@ public:
         MSG msg;
         BOOL bQuit = FALSE;
 
-        player.position = { 0.0f, 6.0f, 4.0f };
+        player.position = { 0.0f, 10.0f, 4.0f };
         player.velocity = { 0.0f, 0.0f, 0.0f };
         player.health = 20.0f;
         player.absorption = 0.0f;
@@ -682,22 +835,27 @@ public:
         player.pitch = 0.0f;
         player.isSprinting = false;
         player.isBlocking = false;
+        player.shieldCooldown = 0;
         player.isCrouching = false;
         player.isSwinging = false;
         player.swingAnim = 0;
         player.selectedSlot = 0;
         player.eatTimer = 0;
+        player.eatDurationNeeded = 32;
         player.attackCooldown = 0;
-        player.miningCooldown = 0;
+        player.maxAttackCooldown = 18;
+        player.isMining = false;
+        player.miningProgress = 0;
         player.fallDistance = 0.0f;
         player.thirdPersonView = false;
 
         for (int i = 0; i < 10; i++) player.hotbar[i] = { ITEM_NONE, 0, 64 };
         player.hotbar[0] = { ITEM_DIAMOND_SWORD, 1, 1 };
         player.hotbar[1] = { ITEM_NETHERITE_SWORD, 1, 1 };
-        player.hotbar[2] = { ITEM_MACE, 1, 1 };
-        player.hotbar[3] = { ITEM_GOLDEN_APPLE, 16, 64 };
-        player.hotbar[4] = { ITEM_BLOCK_GRASS, 32, 64 };
+        player.hotbar[2] = { ITEM_NETHERITE_AXE, 1, 1 };
+        player.hotbar[3] = { ITEM_MACE, 1, 1 };
+        player.hotbar[4] = { ITEM_GOLDEN_APPLE, 16, 64 };
+        player.hotbar[5] = { ITEM_BLOCK_GRASS, 32, 64 };
         player.offhand = { ITEM_SHIELD, 1, 1 };
 
         InitWorld();
@@ -718,13 +876,12 @@ public:
                 for (size_t i = 0; i < bots.size(); i++) UpdateBot((int)i);
                 CheckCollisions();
 
+                if (player.shieldCooldown > 0) player.shieldCooldown--;
                 if (player.isSwinging) {
                     player.swingAnim++;
                     if (player.swingAnim > 10) { player.isSwinging = false; player.swingAnim = 0; }
                 }
-                if (player.eatTimer > 0) player.eatTimer--;
                 if (player.attackCooldown > 0) player.attackCooldown--;
-                if (player.miningCooldown > 0) player.miningCooldown--;
 
                 for (int i = 0; i < MAX_PARTICLES; i++) {
                     if (particles[i].active) {
@@ -738,7 +895,7 @@ public:
                 }
 
                 for (auto& bot : bots) {
-                    if (!bot.isDead && (bot.position.y < -3.0f || bot.health <= 0)) {
+                    if (!bot.isDead && (bot.position.y < -5.0f || bot.health <= 0)) {
                         bot.isDead = true;
                         bot.respawnTimer = 300;
                         score++;
@@ -773,8 +930,17 @@ public:
                     gluLookAt(player.position.x, player.position.y + eyeHeight, player.position.z, lookX, lookY, lookZ, 0.0f, 1.0f, 0.0f);
                 }
 
-                DrawWorld();
+                DrawWorldOptimized(); // 渲染性能分级地形
                 DrawDroppedItems();
+
+                float rayYaw = player.yaw * ((float)M_PI / 180.0f);
+                float rayPitch = player.pitch * ((float)M_PI / 180.0f);
+                Vector3 rOrigin = { player.position.x, player.position.y + eyeHeight, player.position.z };
+                Vector3 rDir = { sinf(rayYaw) * cosf(rayPitch), sinf(rayPitch), -cosf(rayYaw) * cosf(rayPitch) };
+                int hitX, hitY, hitZ, prevX, prevY, prevZ;
+                if (RayCastBlock(rOrigin, rDir, 5.0f, &hitX, &hitY, &hitZ, &prevX, &prevY, &prevZ)) {
+                    DrawWireBox((float)hitX - (float)(WORLD_SIZE / 2), (float)hitY - 4.0f, (float)hitZ - (float)(WORLD_SIZE / 2), 1.02f, 1.02f, 1.02f, 1.0f, 1.0f, 1.0f);
+                }
 
                 if (player.thirdPersonView) {
                     glPushMatrix();
@@ -782,6 +948,7 @@ public:
                     glRotatef(player.yaw, 0.0f, 1.0f, 0.0f);
                     Bot dummyPlayer = { 0 };
                     dummyPlayer.health = player.health;
+                    dummyPlayer.absorption = player.absorption;
                     DrawMCCharacter(&dummyPlayer, player.swingAnim, player.isBlocking || (player.offhand.type == ITEM_SHIELD && player.isBlocking), player.selectedSlot);
                     glPopMatrix();
                 }
@@ -793,6 +960,13 @@ public:
                     float angle = atan2f(player.position.x - bot.position.x, player.position.z - bot.position.z) * (180.0f / (float)M_PI);
                     glRotatef(angle, 0.0f, 1.0f, 0.0f);
                     DrawMCCharacter(&bot, bot.swingAnim, bot.isBlocking, bot.activeSlot);
+
+                    if (showDebugHitboxes) {
+                        glPushMatrix();
+                        glTranslatef(0.0f, 0.9f, 0.0f);
+                        DrawWireBox(0.0f, 0.0f, 0.0f, 0.64f, 1.82f, 0.64f, 1.0f, 0.2f, 0.2f);
+                        glPopMatrix();
+                    }
 
                     glPushMatrix();
                     glTranslatef(0.0f, 2.1f, 0.0f);
@@ -837,7 +1011,7 @@ public:
 };
 
 /**************************
- * 输入与边缘潜行防跌落处理
+ * 输入与机制逻辑处理
  **************************/
 void ProcessInput() {
     float rad = player.yaw * ((float)M_PI / 180.0f);
@@ -846,6 +1020,7 @@ void ProcessInput() {
     float iX = 0.0f, iZ = 0.0f;
 
     player.isCrouching = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+    player.isSprinting = (GetAsyncKeyState('F') & 0x8000) != 0;
 
     if (GetAsyncKeyState('W') & 0x8000) { iX += fX; iZ += fZ; }
     if (GetAsyncKeyState('S') & 0x8000) { iX -= fX; iZ -= fZ; }
@@ -855,7 +1030,7 @@ void ProcessInput() {
     float len = sqrtf(iX * iX + iZ * iZ);
     if (len > 0.0001f) { iX /= len; iZ /= len; }
 
-    float accel = player.isSprinting ? 0.085f : 0.052f;
+    float accel = player.isSprinting ? 0.095f : 0.052f;
     if (player.isCrouching) accel *= 0.35f;
 
     player.velocity.x += iX * accel;
@@ -864,12 +1039,11 @@ void ProcessInput() {
     player.velocity.z *= 0.54f;
     player.velocity.y -= 0.025f;
 
-    // 核心功能：边缘潜行防跌落 (Edge Sneaking)
     if (player.isCrouching) {
         float nextX = player.position.x + player.velocity.x;
         float nextZ = player.position.z + player.velocity.z;
         int footX = (int)floorf(nextX + (float)(WORLD_SIZE / 2) + 0.5f);
-        int footY = (int)floorf(player.position.y + 2.0f - 0.1f + 0.5f);
+        int footY = (int)floorf(player.position.y + 4.0f - 0.1f + 0.5f);
         int footZ = (int)floorf(nextZ + (float)(WORLD_SIZE / 2) + 0.5f);
 
         bool hasGroundAhead = true;
@@ -885,30 +1059,83 @@ void ProcessInput() {
     }
 
     player.position.x += player.velocity.x;
-    if (CheckBoxCollisionWithWorld(player.position.x, player.position.y, player.position.z, 0.6f, 1.8f)) {
+    if (CheckBoxCollisionWithWorld(player.position.x, player.position.y, player.position.z, 0.64f, 1.8f)) {
         player.position.x -= player.velocity.x;
         player.velocity.x = 0.0f;
     }
 
     player.position.z += player.velocity.z;
-    if (CheckBoxCollisionWithWorld(player.position.x, player.position.y, player.position.z, 0.6f, 1.8f)) {
+    if (CheckBoxCollisionWithWorld(player.position.x, player.position.y, player.position.z, 0.64f, 1.8f)) {
         player.position.z -= player.velocity.z;
         player.velocity.z = 0.0f;
     }
 
     float prevY = player.position.y;
     player.position.y += player.velocity.y;
-    if (CheckBoxCollisionWithWorld(player.position.x, player.position.y, player.position.z, 0.6f, player.isCrouching ? 1.35f : 1.8f)) {
+    if (CheckBoxCollisionWithWorld(player.position.x, player.position.y, player.position.z, 0.64f, player.isCrouching ? 1.35f : 1.8f)) {
         player.position.y -= player.velocity.y;
         if (player.velocity.y < 0.0f) {
             player.fallDistance = prevY - player.position.y;
         }
         player.velocity.y = 0.0f;
     }
+
+    if (GetAsyncKeyState('E') & 0x8000) {
+        ItemType activeItem = player.hotbar[player.selectedSlot].type;
+        if (activeItem == ITEM_GOLDEN_APPLE && player.hotbar[player.selectedSlot].count > 0) {
+            player.eatTimer++;
+            if (player.eatTimer >= player.eatDurationNeeded) {
+                player.health = (player.health + 4.0f < 20.0f) ? (player.health + 4.0f) : 20.0f;
+                player.absorption = 8.0f;
+                player.hotbar[player.selectedSlot].count--;
+                if (player.hotbar[player.selectedSlot].count <= 0) player.hotbar[player.selectedSlot].type = ITEM_NONE;
+                PlayGameSound("eat.wav");
+                player.eatTimer = 0;
+            }
+        }
+    }
+    else {
+        player.eatTimer = 0;
+    }
+
+    if ((GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0) {
+        float yawRad = player.yaw * ((float)M_PI / 180.0f);
+        float pitchRad = player.pitch * ((float)M_PI / 180.0f);
+        Vector3 rayOrigin = { player.position.x, player.position.y + 1.62f, player.position.z };
+        Vector3 rayDir = { sinf(yawRad) * cosf(pitchRad), sinf(pitchRad), -cosf(yawRad) * cosf(pitchRad) };
+
+        int hX, hY, hZ, pX, pY, pZ;
+        if (RayCastBlock(rayOrigin, rayDir, 5.0f, &hX, &hY, &hZ, &pX, &pY, &pZ)) {
+            if (!player.isMining || player.targetMiningX != hX || player.targetMiningY != hY || player.targetMiningZ != hZ) {
+                player.isMining = true;
+                player.targetMiningX = hX;
+                player.targetMiningY = hY;
+                player.targetMiningZ = hZ;
+                player.miningProgress = 0;
+            }
+            player.miningProgress++;
+            if (player.miningProgress >= 28) {
+                ItemType dropType = (world[hX][hY][hZ].type == 3) ? ITEM_BLOCK_STONE : ITEM_BLOCK_GRASS;
+                world[hX][hY][hZ].type = 0;
+                PlayGameSound("hit.wav");
+                SpawnDroppedItem((float)hX - (float)(WORLD_SIZE / 2), (float)hY - 4.0f, (float)hZ - (float)(WORLD_SIZE / 2), dropType, 1);
+                player.isMining = false;
+                player.miningProgress = 0;
+            }
+        }
+        else {
+            player.isMining = false;
+            player.miningProgress = 0;
+        }
+    }
+    else {
+        player.isMining = false;
+        player.miningProgress = 0;
+    }
 }
 
 /**************************
- * HUD 与武器渲染
+ * HUD 与进度条渲染
  **************************/
 void DrawHUD() {
     for (int i = 0; i < 9; i++) {
@@ -928,6 +1155,7 @@ void DrawHUD() {
             glScalef(0.1f, 0.1f, 0.1f);
             if (player.hotbar[i].type == ITEM_DIAMOND_SWORD) DrawDetailedDiamondSword();
             else if (player.hotbar[i].type == ITEM_NETHERITE_SWORD) DrawDetailedNetheriteSword();
+            else if (player.hotbar[i].type == ITEM_NETHERITE_AXE) DrawDetailedNetheriteAxe();
             else if (player.hotbar[i].type == ITEM_MACE) DrawDetailedMace();
             else if (player.hotbar[i].type == ITEM_SHIELD) DrawDetailedShield();
             else if (player.hotbar[i].type == ITEM_GOLDEN_APPLE) DrawGoldenAppleItem();
@@ -959,6 +1187,18 @@ void DrawHUD() {
             DrawBox(hx, hy, 0.0f, 0.03f, 0.035f, 0.01f, 0.22f, 0.22f, 0.22f);
         }
     }
+
+    if (player.attackCooldown > 0) {
+        float cdRatio = 1.0f - ((float)player.attackCooldown / (float)player.maxAttackCooldown);
+        DrawBox(0.0f, -0.12f, 0.0f, 0.25f, 0.025f, 0.01f, 0.15f, 0.15f, 0.15f);
+        DrawBox(-0.125f + (0.25f * cdRatio) / 2.0f, -0.12f, 0.01f, 0.25f * cdRatio, 0.018f, 0.01f, 0.95f, 0.75f, 0.1f);
+    }
+
+    if (player.isMining) {
+        float mineRatio = (float)player.miningProgress / 28.0f;
+        DrawBox(0.0f, -0.18f, 0.0f, 0.32f, 0.03f, 0.01f, 0.2f, 0.2f, 0.2f);
+        DrawBox(-0.16f + (0.32f * mineRatio) / 2.0f, -0.18f, 0.01f, 0.32f * mineRatio, 0.022f, 0.01f, 0.2f, 0.85f, 0.3f);
+    }
 }
 
 LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
@@ -987,13 +1227,13 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
     {
         WPARAM key = wParam;
         if (key == VK_ESCAPE) PostQuitMessage(0);
-        if (key == VK_SHIFT) player.isSprinting = !player.isSprinting;
-        if (key == VK_F5) player.thirdPersonView = !player.thirdPersonView;
-        if (key == 'F') {
-            InventoryItem temp = player.hotbar[player.selectedSlot];
-            player.hotbar[player.selectedSlot] = player.offhand;
-            player.offhand = temp;
+        if (key == 'R' || key == 'r') showDebugHitboxes = !showDebugHitboxes;
+        if (key == 'T' || key == 't') { // 按 T 键动态切换性能渲染等级（低/中/高）
+            if (currentRenderQuality == QUALITY_HIGH) currentRenderQuality = QUALITY_MEDIUM;
+            else if (currentRenderQuality == QUALITY_MEDIUM) currentRenderQuality = QUALITY_LOW;
+            else currentRenderQuality = QUALITY_HIGH;
         }
+        if (key == VK_F5) player.thirdPersonView = !player.thirdPersonView;
         if (key >= '1' && key <= '9') player.selectedSlot = (int)(key - '1');
         if (key == VK_SPACE) {
             if (player.velocity.y <= 0.001f && player.velocity.y >= -0.05f) {
@@ -1010,15 +1250,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 
         ItemType activeItem = player.hotbar[player.selectedSlot].type;
 
-        if (activeItem == ITEM_GOLDEN_APPLE && player.hotbar[player.selectedSlot].count > 0) {
-            player.eatTimer = 30;
-            player.health = (player.health + 4.0f < 20.0f) ? (player.health + 4.0f) : 20.0f;
-            player.absorption = 8.0f;
-            player.hotbar[player.selectedSlot].count--;
-            if (player.hotbar[player.selectedSlot].count <= 0) player.hotbar[player.selectedSlot].type = ITEM_NONE;
-            PlayGameSound("eat.wav");
-            return 0;
-        }
+        if (player.attackCooldown > 0) return 0;
+        player.attackCooldown = player.maxAttackCooldown;
 
         float yawRad = player.yaw * ((float)M_PI / 180.0f);
         float pitchRad = player.pitch * ((float)M_PI / 180.0f);
@@ -1033,7 +1266,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             BoundingBox box = GetBotBoundingBox(&bot);
             float hitDist = 0.0f;
             if (RayIntersectsBox(rayOrigin, rayDir, box, &hitDist)) {
-                if (hitDist > 0.0f && hitDist <= 5.0f && hitDist < minHitDist) {
+                if (hitDist > 0.0f && hitDist <= 4.5f && hitDist < minHitDist) {
                     minHitDist = hitDist;
                     hitBot = &bot;
                 }
@@ -1041,47 +1274,76 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         }
 
         if (hitBot != nullptr) {
-            float baseDmg = 2.5f;
+            float baseDmg = 4.0f;
             bool isWindBurst = false;
+            bool isAxe = (activeItem == ITEM_NETHERITE_AXE);
+            bool isMace = (activeItem == ITEM_MACE);
 
-            if (activeItem == ITEM_DIAMOND_SWORD) baseDmg = 3.5f;
-            else if (activeItem == ITEM_NETHERITE_SWORD) baseDmg = 4.5f;
-            else if (activeItem == ITEM_MACE) {
-                baseDmg = 5.0f + (player.fallDistance > 0.0f ? player.fallDistance * 15.0f : 0.0f);
-                if (player.fallDistance > 1.5f) {
+            if (activeItem == ITEM_DIAMOND_SWORD) baseDmg = 7.0f;
+            else if (activeItem == ITEM_NETHERITE_SWORD) baseDmg = 9.0f;
+            else if (isAxe) baseDmg = 5.5f;
+            else if (isMace) {
+                // 修改点：只要玩家下落高度/滞空差值高于 0.3 格，即触发重锤风爆弹飞机制！
+                if (player.fallDistance > 0.3f) {
                     isWindBurst = true;
-                    player.velocity.y = 0.55f;
+                    baseDmg = 6.0f + player.fallDistance * 25.0f; // 根据滞空高度造成巨额伤害
+                    player.velocity.y = 0.75f; // 强力反弹向上
                     SpawnWindBurstParticles(hitBot->position.x, hitBot->position.y + 1.0f, hitBot->position.z);
                     PlayGameSound("wind_burst.wav");
                 }
+                else {
+                    baseDmg = 5.0f;
+                }
             }
 
-            bool isCrit = (player.velocity.y < -0.01f || isWindBurst);
-            if (isCrit) {
-                baseDmg *= 1.5f;
-                SpawnParticleEx(hitBot->position.x, hitBot->position.y + 1.0f, hitBot->position.z, 1.0f, 1.0f, 1.0f, true);
+            bool isJumpCrit = (player.velocity.y < -0.01f || isWindBurst);
+            if (isJumpCrit) {
+                baseDmg *= isAxe ? 2.2f : 1.6f;
+                SpawnJumpCritParticles(hitBot->position.x, hitBot->position.y + 1.2f, hitBot->position.z);
+                PlayGameSound("hit.wav");
             }
 
-            // 重锤风暴击飞弹起与伤害赋予
+            bool botIsShielding = hitBot->isBlocking && hitBot->shieldCooldown == 0;
+            if (botIsShielding) {
+                if (isAxe || isMace) {
+                    hitBot->shieldCooldown = 90;
+                    hitBot->isBlocking = false;
+                    PlayGameSound("hit.wav");
+                }
+                else {
+                    baseDmg = 0.0f;
+                }
+            }
+
+            if (hitBot->absorption > 0.0f && baseDmg > 0.0f) {
+                if (hitBot->absorption >= baseDmg) { hitBot->absorption -= baseDmg; baseDmg = 0.0f; }
+                else { baseDmg -= hitBot->absorption; hitBot->absorption = 0.0f; }
+            }
+
             hitBot->health -= baseDmg;
-            hitBot->velocity.y = 0.42f;
             hitBot->hitStunTimer = 15;
+
+            // 如果触发重锤高于0.3格风爆，目标被猛烈弹飞！
+            if (isMace && isWindBurst) {
+                hitBot->velocity.y = 0.95f; // 极大击飞高度
+                hitBot->velocity.x += rayDir.x * 0.75f;
+                hitBot->velocity.z += rayDir.z * 0.75f;
+            }
+            else if (isAxe) {
+                hitBot->velocity.y = 0.28f;
+                hitBot->velocity.x += rayDir.x * 0.45f;
+                hitBot->velocity.z += rayDir.z * 0.45f;
+            }
+            else {
+                hitBot->velocity.y = 0.22f;
+                hitBot->velocity.x += rayDir.x * 0.22f;
+                hitBot->velocity.z += rayDir.z * 0.22f;
+            }
+
             comboCount++;
             PlayGameSound("hit.wav");
             SpawnParticleEx(hitBot->position.x, hitBot->position.y + 1.0f, hitBot->position.z, 0.9f, 0.1f, 0.1f, false);
             return 0;
-        }
-
-        // 挖掘方块冷却时间
-        if (player.miningCooldown == 0) {
-            int hX, hY, hZ, pX, pY, pZ;
-            if (RayCastBlock(rayOrigin, rayDir, 5.0f, &hX, &hY, &hZ, &pX, &pY, &pZ)) {
-                ItemType dropType = (world[hX][hY][hZ].type == 3) ? ITEM_BLOCK_STONE : ITEM_BLOCK_GRASS;
-                world[hX][hY][hZ].type = 0;
-                player.miningCooldown = 20;
-                PlayGameSound("hit.wav");
-                SpawnDroppedItem((float)hX - (float)(WORLD_SIZE / 2), (float)hY - 2.0f, (float)hZ - (float)(WORLD_SIZE / 2), dropType, 1);
-            }
         }
         return 0;
     }
@@ -1092,17 +1354,10 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             if (player.offhand.type == ITEM_BLOCK_GRASS || player.offhand.type == ITEM_BLOCK_STONE) {
                 activeItem = player.offhand.type;
             }
-            else if (player.offhand.type == ITEM_GOLDEN_APPLE) {
-                player.eatTimer = 30;
-                player.health = (player.health + 4.0f < 20.0f) ? (player.health + 4.0f) : 20.0f;
-                player.absorption = 8.0f;
-                player.offhand.count--;
-                if (player.offhand.count <= 0) player.offhand.type = ITEM_NONE;
-                PlayGameSound("eat.wav");
-                return 0;
-            }
             else {
-                player.isBlocking = true;
+                if (player.shieldCooldown == 0) {
+                    player.isBlocking = true;
+                }
                 return 0;
             }
         }
@@ -1121,11 +1376,11 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                 if (pX >= 0 && pY >= 0 && pZ >= 0 && pX < WORLD_SIZE && pY < WORLD_HEIGHT && pZ < WORLD_SIZE) {
                     if (world[pX][pY][pZ].type == 0) {
                         float bx = (float)pX - (float)(WORLD_SIZE / 2);
-                        float by = (float)pY - 2.0f;
+                        float by = (float)pY - 4.0f;
                         float bz = (float)pZ - (float)(WORLD_SIZE / 2);
 
-                        float pMinX = player.position.x - 0.3f, pMaxX = player.position.x + 0.3f;
-                        float pMinZ = player.position.z - 0.3f, pMaxZ = player.position.z + 0.3f;
+                        float pMinX = player.position.x - 0.32f, pMaxX = player.position.x + 0.32f;
+                        float pMinZ = player.position.z - 0.32f, pMaxZ = player.position.z + 0.32f;
                         float pMinY = player.position.y, pMaxY = player.position.y + 1.8f;
 
                         bool collidesWithPlayer = (pMinX < bx + 0.5f && pMaxX > bx - 0.5f &&
@@ -1174,6 +1429,7 @@ void DrawPlayerFirstPersonHands() {
     glTranslatef(0.0f, 0.15f, 0.0f);
     if (curItem == ITEM_DIAMOND_SWORD) DrawDetailedDiamondSword();
     else if (curItem == ITEM_NETHERITE_SWORD) DrawDetailedNetheriteSword();
+    else if (curItem == ITEM_NETHERITE_AXE) DrawDetailedNetheriteAxe();
     else if (curItem == ITEM_MACE) DrawDetailedMace();
     else if (curItem == ITEM_SHIELD) DrawDetailedShield();
     else if (curItem == ITEM_GOLDEN_APPLE) DrawGoldenAppleItem();
@@ -1189,9 +1445,12 @@ void DrawPlayerFirstPersonHands() {
     if (player.offhand.type != ITEM_NONE) {
         glPushMatrix();
         glTranslatef(-0.48f, -0.38f, -0.55f);
-        if (player.isBlocking || player.offhand.type == ITEM_SHIELD && player.isBlocking) {
+        if ((player.isBlocking || player.offhand.type == ITEM_SHIELD && player.isBlocking) && player.shieldCooldown == 0) {
             glRotatef(-30.0f, 1.0f, 0.0f, 0.0f);
             glRotatef(20.0f, 0.0f, 0.0f, 1.0f);
+        }
+        else {
+            glRotatef(15.0f, 1.0f, 0.0f, 0.0f);
         }
         DrawBox(0.0f, -0.15f, 0.0f, 0.15f, 0.45f, 0.15f, 0.88f, 0.72f, 0.58f);
         glTranslatef(0.0f, 0.15f, 0.0f);
@@ -1218,7 +1477,7 @@ void DrawMCCharacter(Bot* b, int swingFrame, bool isBotBlocking, int itemInHand)
 
     glPushMatrix();
     glTranslatef(0.31f, 1.1f, 0.0f);
-    if (isBotBlocking) {
+    if (isBotBlocking && b->shieldCooldown == 0) {
         glRotatef(-50.0f, 1.0f, 0.0f, 0.0f);
         glRotatef(35.0f, 0.0f, 0.0f, 1.0f);
     }
@@ -1232,6 +1491,7 @@ void DrawMCCharacter(Bot* b, int swingFrame, bool isBotBlocking, int itemInHand)
     glPushMatrix();
     glTranslatef(0.31f, 0.58f, 0.3f);
     if (itemInHand == 2) DrawDetailedMace();
+    else if (itemInHand == 3) DrawDetailedNetheriteAxe();
     else DrawDetailedNetheriteSword();
     glPopMatrix();
 
@@ -1253,6 +1513,13 @@ void DrawDetailedNetheriteSword() {
     DrawBox(0.0f, -0.44f, 0.0f, 0.08f, 0.07f, 0.08f, 0.1f, 0.1f, 0.12f);
     DrawBox(0.0f, -0.15f, 0.0f, 0.35f, 0.07f, 0.08f, 0.25f, 0.24f, 0.28f);
     DrawBox(0.0f, 0.28f, 0.0f, 0.13f, 0.72f, 0.05f, 0.32f, 0.32f, 0.36f);
+    glPopMatrix();
+}
+
+void DrawDetailedNetheriteAxe() {
+    glPushMatrix();
+    DrawBox(0.0f, -0.3f, 0.0f, 0.06f, 0.45f, 0.06f, 0.25f, 0.25f, 0.28f);
+    DrawBox(0.0f, 0.18f, 0.0f, 0.28f, 0.32f, 0.08f, 0.32f, 0.32f, 0.36f);
     glPopMatrix();
 }
 
@@ -1308,8 +1575,8 @@ void DisableOpenGL(HWND hWnd, HDC hDC, HGLRC hRC) {
 }
 
 /**********************************************************
- * WinMain 入口：通过面向对象游戏类封装启动
- **********************************************************/
+ * WinMain 入口
+ *********************************----------------*********/
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int iCmdShow) {
     MinecraftGameEngine game;
     if (!game.Initialize(hInstance, iCmdShow)) {
