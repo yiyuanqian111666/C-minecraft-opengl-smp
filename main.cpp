@@ -1,5 +1,5 @@
 /**********************************************************
- * Minecraft Java SMP - 终极性能渲染与重锤弹飞完美版
+ * Minecraft Java SMP - v2.0 终极架构与纯正 PvP 机制重构版
  **********************************************************/
 #define _CRT_SECURE_NO_WARNINGS
 
@@ -23,6 +23,7 @@
 #define M_PI 3.14159265358979323846f
 #endif
 
+// 数学辅助函数
 inline float Clamp(float val, float low, float high) {
     if (val < low) return low;
     if (val > high) return high;
@@ -30,7 +31,7 @@ inline float Clamp(float val, float low, float high) {
 }
 
 /**************************
- * Game Structs & Data
+ * 数据结构定义
  **************************/
 enum ItemType {
     ITEM_NONE = 0,
@@ -52,11 +53,32 @@ struct InventoryItem {
 
 struct Vector3 {
     float x, y, z;
+
+    Vector3 operator+(const Vector3& o) const { return { x + o.x, y + o.y, z + o.z }; }
+    Vector3 operator-(const Vector3& o) const { return { x - o.x, y - o.y, z - o.z }; }
+    Vector3 operator*(float s) const { return { x * s, y * s, z * s }; }
+    Vector3& operator+=(const Vector3& o) { x += o.x; y += o.y; z += o.z; return *this; }
+    Vector3& operator*=(float s) { x *= s; y *= s; z *= s; return *this; }
+
+    float LengthSq() const { return x * x + y * y + z * z; }
+    float Length() const { return sqrtf(LengthSq()); }
+    Vector3 Normalized() const {
+        float l = Length();
+        if (l < 0.0001f) return { 0, 0, 0 };
+        return { x / l, y / l, z / l };
+    }
 };
 
 struct BoundingBox {
     Vector3 min;
     Vector3 max;
+
+    // AABB 与 AABB 相交检测
+    bool Intersects(const BoundingBox& other) const {
+        return (min.x < other.max.x && max.x > other.min.x &&
+                min.y < other.max.y && max.y > other.min.y &&
+                min.z < other.max.z && max.z > other.min.z);
+    }
 };
 
 struct Particle {
@@ -83,23 +105,22 @@ struct DroppedItem {
 DroppedItem droppedItems[MAX_DROPS];
 
 struct VoxelBlock {
-    int type;
+    int type; // 0: 空气, 1: 草方块, 2: 泥土, 3: 石头
     float r, g, b;
 };
 
-// 扩大世界规模与高低地形
 #define WORLD_SIZE 52
 #define WORLD_HEIGHT 20
 VoxelBlock world[WORLD_SIZE][WORLD_HEIGHT][WORLD_SIZE];
 
-// 性能渲染配置枚举
 enum RenderQuality {
     QUALITY_LOW = 1,
     QUALITY_MEDIUM = 2,
     QUALITY_HIGH = 3
 };
-RenderQuality currentRenderQuality = QUALITY_HIGH; // 可通过按键或配置调整渲染级别
+RenderQuality currentRenderQuality = QUALITY_HIGH;
 
+// 玩家结构体
 struct Player {
     Vector3 position;
     Vector3 velocity;
@@ -125,10 +146,20 @@ struct Player {
     int miningProgress;
     int targetMiningX, targetMiningY, targetMiningZ;
 
-    float fallDistance;
+    float lastLandY;        // 用于精准计算下落高度的起点 Y 坐标
+    bool isGrounded;        // 是否着地
     bool thirdPersonView;
+
+    BoundingBox GetAABB() const {
+        float h = isCrouching ? 1.35f : 1.8f;
+        return {
+            { position.x - 0.3f, position.y, position.z - 0.3f },
+            { position.x + 0.3f, position.y + h, position.z + 0.3f }
+        };
+    }
 };
 
+// Bot 结构体
 struct Bot {
     Vector3 position;
     Vector3 velocity;
@@ -148,10 +179,18 @@ struct Bot {
     int activeSlot;
     int eatCooldown;
     int hitStunTimer;
-    int targetId;
+    int targetId; // -1 代表玩家，>=0 代表其他 Bot
     int id;
+
+    BoundingBox GetAABB() const {
+        return {
+            { position.x - 0.3f, position.y, position.z - 0.3f },
+            { position.x + 0.3f, position.y + 1.8f, position.z + 0.3f }
+        };
+    }
 };
 
+// 全局状态变量
 Player player;
 std::vector<Bot> bots;
 int score = 0;
@@ -160,7 +199,7 @@ HWND g_hWnd = NULL;
 bool showDebugHitboxes = false;
 
 /**************************
- * Function Declarations
+ * 函数前置声明
  **************************/
 LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
 void EnableOpenGL(HWND hWnd, HDC* hDC, HGLRC* hRC);
@@ -174,7 +213,7 @@ void DrawDetailedMace();
 void DrawDetailedShield();
 void DrawGoldenAppleItem();
 void DrawCrosshair();
-void DrawWorldOptimized(); // 性能分级地形渲染
+void DrawWorldOptimized();
 void DrawDroppedItems();
 void ProcessInput();
 void DrawHUD();
@@ -182,14 +221,13 @@ void InitWorld();
 void SpawnBots();
 void UpdateBot(int botIndex);
 void CheckCollisions();
-bool CheckBoxCollisionWithWorld(float x, float y, float z, float width, float height);
-BoundingBox GetBotBoundingBox(const Bot* b);
+bool CheckAABBCollisionWithWorld(const BoundingBox& box);
 bool RayIntersectsBox(Vector3 rayOrigin, Vector3 rayDir, BoundingBox box, float* outDist);
 bool RayCastBlock(Vector3 origin, Vector3 dir, float maxDist, int* hitX, int* hitY, int* hitZ, int* prevX, int* prevY, int* prevZ);
 void DrawWireBox(float x, float y, float z, float dx, float dy, float dz, float r, float g, float b);
 
 /**************************
- * Sound & Particle Helper
+ * 音效与粒子辅助系统
  **************************/
 void PlayGameSound(const char* filename) {
     PlaySoundA(filename, NULL, SND_ASYNC | SND_FILENAME | SND_NODEFAULT);
@@ -213,6 +251,7 @@ void SpawnParticleEx(float x, float y, float z, float r, float g, float b, bool 
     }
 }
 
+// 暴击粒子
 void SpawnJumpCritParticles(float x, float y, float z) {
     for (int i = 0; i < 25; i++) {
         for (int p = 0; p < MAX_PARTICLES; p++) {
@@ -228,15 +267,16 @@ void SpawnJumpCritParticles(float x, float y, float z) {
     }
 }
 
+// 锤子风爆冲击波粒子
 void SpawnWindBurstParticles(float x, float y, float z) {
-    for (int i = 0; i < 45; i++) {
-        float angle = ((float)i / 45.0f) * 2.0f * (float)M_PI;
+    for (int i = 0; i < 60; i++) {
+        float angle = ((float)i / 60.0f) * 2.0f * (float)M_PI;
         for (int p = 0; p < MAX_PARTICLES; p++) {
             if (!particles[p].active) {
                 particles[p].active = true;
                 particles[p].position = { x, y, z };
-                particles[p].velocity = { cosf(angle) * 0.55f, 0.35f + ((float)(rand() % 25)) / 40.0f, sinf(angle) * 0.55f };
-                particles[p].life = 50;
+                particles[p].velocity = { cosf(angle) * 0.75f, 0.35f + ((float)(rand() % 25)) / 40.0f, sinf(angle) * 0.75f };
+                particles[p].life = 55;
                 particles[p].r = 0.85f; particles[p].g = 0.95f; particles[p].b = 1.0f;
                 break;
             }
@@ -259,7 +299,7 @@ void SpawnDroppedItem(float x, float y, float z, ItemType type, int count) {
 }
 
 /**************************
- * Voxel & Wireframe Box Drawing
+ * 基础绘制与方块渲染
  **************************/
 void DrawBox(float x, float y, float z, float dx, float dy, float dz, float r, float g, float b) {
     glPushMatrix();
@@ -267,30 +307,30 @@ void DrawBox(float x, float y, float z, float dx, float dy, float dz, float r, f
     glScalef(dx, dy, dz);
 
     glBegin(GL_QUADS);
+    // 前面
     glColor3f(r * 0.85f, g * 0.85f, b * 0.85f);
     glVertex3f(-0.5f, -0.5f, 0.5f); glVertex3f(0.5f, -0.5f, 0.5f);
     glVertex3f(0.5f, 0.5f, 0.5f); glVertex3f(-0.5f, 0.5f, 0.5f);
-
+    // 后面
     glColor3f(r * 0.45f, g * 0.45f, b * 0.45f);
     glVertex3f(-0.5f, -0.5f, -0.5f); glVertex3f(-0.5f, 0.5f, -0.5f);
     glVertex3f(0.5f, 0.5f, -0.5f); glVertex3f(0.5f, -0.5f, -0.5f);
-
+    // 顶面
     float rTop = (r * 1.1f > 0.95f) ? 0.95f : (r * 1.1f);
     float gTop = (g * 1.1f > 0.95f) ? 0.95f : (g * 1.1f);
     float bTop = (b * 1.1f > 0.95f) ? 0.95f : (b * 1.1f);
     glColor3f(rTop, gTop, bTop);
     glVertex3f(-0.5f, 0.5f, -0.5f); glVertex3f(-0.5f, 0.5f, 0.5f);
     glVertex3f(0.5f, 0.5f, 0.5f); glVertex3f(0.5f, 0.5f, -0.5f);
-
+    // 底面
     glColor3f(r * 0.2f, g * 0.2f, b * 0.2f);
     glVertex3f(-0.5f, -0.5f, -0.5f); glVertex3f(0.5f, -0.5f, -0.5f);
     glVertex3f(0.5f, -0.5f, 0.5f); glVertex3f(-0.5f, -0.5f, 0.5f);
-
-    glColor3f(r * 0.7f, g * 0.7f, g * 0.7f); // Fixed typo to b
+    // 右面
     glColor3f(r * 0.7f, g * 0.7f, b * 0.7f);
     glVertex3f(0.5f, -0.5f, -0.5f); glVertex3f(0.5f, 0.5f, -0.5f);
-    glVertex3f(0.5f, -0.5f, 0.5f); glVertex3f(0.5f, 0.5f, 0.5f);
-
+    glVertex3f(0.5f, 0.5f, 0.5f); glVertex3f(0.5f, -0.5f, 0.5f);
+    // 左面
     glColor3f(r * 0.55f, g * 0.55f, b * 0.55f);
     glVertex3f(-0.5f, -0.5f, -0.5f); glVertex3f(-0.5f, -0.5f, 0.5f);
     glVertex3f(-0.5f, 0.5f, 0.5f); glVertex3f(-0.5f, 0.5f, -0.5f);
@@ -326,20 +366,15 @@ void DrawWireBox(float x, float y, float z, float dx, float dy, float dz, float 
 }
 
 /**************************
- * 碰撞与射线检测
+ * 优化后的精确物理碰撞箱系统
  **************************/
-bool CheckBoxCollisionWithWorld(float x, float y, float z, float width, float height) {
-    float halfW = width / 2.0f;
-    float minX = x - halfW, maxX = x + halfW;
-    float minZ = z - halfW, maxZ = z + halfW;
-    float minY = y, maxY = y + height;
-
-    int startX = (int)floorf(minX + (float)(WORLD_SIZE / 2) + 0.5f);
-    int endX = (int)floorf(maxX + (float)(WORLD_SIZE / 2) + 0.5f);
-    int startY = (int)floorf(minY + 4.0f + 0.5f);
-    int endY = (int)floorf(maxY + 4.0f + 0.5f);
-    int startZ = (int)floorf(minZ + (float)(WORLD_SIZE / 2) + 0.5f);
-    int endZ = (int)floorf(maxZ + (float)(WORLD_SIZE / 2) + 0.5f);
+bool CheckAABBCollisionWithWorld(const BoundingBox& box) {
+    int startX = (int)floorf(box.min.x + (float)(WORLD_SIZE / 2) + 0.5f);
+    int endX = (int)floorf(box.max.x + (float)(WORLD_SIZE / 2) + 0.5f);
+    int startY = (int)floorf(box.min.y + 4.0f + 0.5f);
+    int endY = (int)floorf(box.max.y + 4.0f + 0.5f);
+    int startZ = (int)floorf(box.min.z + (float)(WORLD_SIZE / 2) + 0.5f);
+    int endZ = (int)floorf(box.max.z + (float)(WORLD_SIZE / 2) + 0.5f);
 
     for (int ix = startX; ix <= endX; ix++) {
         for (int iy = startY; iy <= endY; iy++) {
@@ -350,9 +385,12 @@ bool CheckBoxCollisionWithWorld(float x, float y, float z, float width, float he
                         float by = (float)iy - 4.0f;
                         float bz = (float)iz - (float)(WORLD_SIZE / 2);
 
-                        if (minX < bx + 0.5f && maxX > bx - 0.5f &&
-                            minY < by + 0.5f && maxY > by - 0.5f &&
-                            minZ < bz + 0.5f && maxZ > bz - 0.5f) {
+                        BoundingBox blockBox = {
+                            { bx - 0.5f, by - 0.5f, bz - 0.5f },
+                            { bx + 0.5f, by + 0.5f, bz + 0.5f }
+                        };
+
+                        if (box.Intersects(blockBox)) {
                             return true;
                         }
                     }
@@ -361,13 +399,6 @@ bool CheckBoxCollisionWithWorld(float x, float y, float z, float width, float he
         }
     }
     return false;
-}
-
-BoundingBox GetBotBoundingBox(const Bot* b) {
-    BoundingBox box;
-    box.min = { b->position.x - 0.32f, b->position.y, b->position.z - 0.32f };
-    box.max = { b->position.x + 0.32f, b->position.y + 1.8f, b->position.z + 0.32f };
-    return box;
 }
 
 bool RayIntersectsBox(Vector3 rayOrigin, Vector3 rayDir, BoundingBox box, float* outDist) {
@@ -424,7 +455,7 @@ bool RayCastBlock(Vector3 origin, Vector3 dir, float maxDist, int* hitX, int* hi
 }
 
 /**************************
- * 世界生成与性能分级渲染
+ * 世界地形生成与渲染
  **************************/
 void InitWorld() {
     for (int x = 0; x < WORLD_SIZE; x++) {
@@ -458,17 +489,16 @@ void InitWorld() {
     }
 }
 
-// 性能分级渲染地形：根据当前质量设置（低/中/高）裁剪渲染距离和跳过部分方块
 void DrawWorldOptimized() {
     int pChunkX = (int)floorf(player.position.x + (float)(WORLD_SIZE / 2) + 0.5f);
     int pChunkZ = (int)floorf(player.position.z + (float)(WORLD_SIZE / 2) + 0.5f);
 
-    int renderRadius = 14; // 默认高质量视距
+    int renderRadius = 14;
     int step = 1;
 
     if (currentRenderQuality == QUALITY_LOW) {
         renderRadius = 8;
-        step = 2; // 低配下每隔一个方块渲染一次，大幅提升帧率
+        step = 2;
     }
     else if (currentRenderQuality == QUALITY_MEDIUM) {
         renderRadius = 11;
@@ -503,7 +533,7 @@ void DrawDroppedItems() {
 }
 
 /**************************
- * Bot AI
+ * 高智能 Bot AI 逻辑
  **************************/
 void SpawnBots() {
     bots.clear();
@@ -553,16 +583,16 @@ void UpdateBot(int botIndex) {
     if (b->shieldCooldown > 0) b->shieldCooldown--;
 
     b->decisionTimer++;
-    if (b->decisionTimer > 15) {
+    if (b->decisionTimer > 10) {
         b->decisionTimer = 0;
-        b->strafeDir = (rand() % 2 == 0) ? 1.0f : -1.0f;
-
-        float closestDist = sqrtf(powf(player.position.x - b->position.x, 2) + powf(player.position.z - b->position.z, 2));
+        
+        // 目标决策：动态计算最近距离的敌人（玩家或其他 Bot）
+        float closestDist = (b->position - player.position).Length();
         int bestTarget = -1;
 
         for (size_t j = 0; j < bots.size(); j++) {
             if ((int)j == botIndex || bots[j].isDead) continue;
-            float d2 = sqrtf(powf(bots[j].position.x - b->position.x, 2) + powf(bots[j].position.z - b->position.z, 2));
+            float d2 = (b->position - bots[j].position).Length();
             if (d2 < closestDist) {
                 closestDist = d2;
                 bestTarget = (int)j;
@@ -570,18 +600,26 @@ void UpdateBot(int botIndex) {
         }
         b->targetId = bestTarget;
 
+        // 金苹果战术判定
         if (b->health < 10.0f && b->eatCooldown == 0 && (rand() % 100 < 80)) {
-            b->health = (b->health + 8.0f < 20.0f) ? (b->health + 8.0f) : 20.0f;
+            b->health = min(20.0f, b->health + 8.0f);
             b->absorption = 8.0f;
             b->eatCooldown = 120;
             PlayGameSound("eat.wav");
         }
 
-        if (closestDist < 3.2f && (rand() % 100 < 70) && b->shieldCooldown == 0) {
-            b->isBlocking = true;
-            b->blockTimer = 25;
-        }
-        else {
+        // 举盾与切武器战术：受到攻击或者近身概率防御
+        if (closestDist < 3.2f && b->shieldCooldown == 0) {
+            if (rand() % 100 < 65) {
+                b->isBlocking = true;
+                b->blockTimer = 20 + rand() % 15;
+            }
+            // 针对举盾目标自动切换斧头或重锤破盾
+            bool targetShielding = (b->targetId == -1) ? player.isBlocking : bots[b->targetId].isBlocking;
+            if (targetShielding) {
+                b->activeSlot = (rand() % 2 == 0) ? 3 : 2; // 斧头或重锤
+            }
+        } else {
             b->isBlocking = false;
         }
     }
@@ -593,49 +631,43 @@ void UpdateBot(int botIndex) {
     }
 
     b->strafeTimer++;
-    if (b->strafeTimer > 20) {
+    if (b->strafeTimer > 18) {
         b->strafeDir *= -1.0f;
         b->strafeTimer = 0;
     }
 
-    Vector3 targetPos;
-    if (b->targetId == -1) targetPos = player.position;
-    else targetPos = bots[b->targetId].position;
+    Vector3 targetPos = (b->targetId == -1) ? player.position : bots[b->targetId].position;
+    Vector3 dir = (targetPos - b->position);
+    float dist = dir.Length();
+    dir = dir.Normalized();
 
-    float dx = targetPos.x - b->position.x;
-    float dz = targetPos.z - b->position.z;
-    float dist = sqrtf(dx * dx + dz * dz);
+    float speed = b->isBlocking ? 0.032f : 0.058f;
+    Vector3 sideDir = { -dir.z * b->strafeDir, 0.0f, dir.x * b->strafeDir };
+    Vector3 moveVel = (dir * 0.75f + sideDir * 0.35f) * speed;
 
-    float speed = b->isBlocking ? 0.035f : 0.058f;
-    float fX = dx / (dist > 0.001f ? dist : 1.0f);
-    float fZ = dz / (dist > 0.001f ? dist : 1.0f);
-    float sX = -fZ * b->strafeDir;
-    float sZ = fX * b->strafeDir;
+    // 尝试在 X 轴和 Z 轴移动
+    b->position.x += moveVel.x + b->velocity.x;
+    if (CheckAABBCollisionWithWorld(b->GetAABB())) {
+        b->position.x -= (moveVel.x + b->velocity.x);
+        b->velocity.y = 0.28f; // 自动跳跃过坎
+    }
 
-    float moveX = (fX * 0.75f + sX * 0.25f) * speed;
-    float moveZ = (fZ * 0.75f + sZ * 0.25f) * speed;
-
-    b->position.x += moveX + b->velocity.x;
-    if (CheckBoxCollisionWithWorld(b->position.x, b->position.y, b->position.z, 0.64f, 1.8f)) {
-        b->position.x -= (moveX + b->velocity.x);
+    b->position.z += moveVel.z + b->velocity.z;
+    if (CheckAABBCollisionWithWorld(b->GetAABB())) {
+        b->position.z -= (moveVel.z + b->velocity.z);
         b->velocity.y = 0.28f;
     }
 
-    b->position.z += moveZ + b->velocity.z;
-    if (CheckBoxCollisionWithWorld(b->position.x, b->position.y, b->position.z, 0.64f, 1.8f)) {
-        b->position.z -= (moveZ + b->velocity.z);
-        b->velocity.y = 0.28f;
-    }
-
+    // 重力与 Y 轴碰撞
     b->velocity.y -= 0.025f;
     b->position.y += b->velocity.y;
-    if (CheckBoxCollisionWithWorld(b->position.x, b->position.y, b->position.z, 0.64f, 1.8f)) {
+    if (CheckAABBCollisionWithWorld(b->GetAABB())) {
         b->position.y -= b->velocity.y;
         b->velocity.y = 0.0f;
     }
 
-    b->velocity.x *= 0.8f;
-    b->velocity.z *= 0.8f;
+    b->velocity.x *= 0.82f;
+    b->velocity.z *= 0.82f;
 
     if (b->attackCooldown > 0) b->attackCooldown--;
     if (b->isSwinging) {
@@ -643,24 +675,22 @@ void UpdateBot(int botIndex) {
         if (b->swingAnim > 10) { b->isSwinging = false; b->swingAnim = 0; }
     }
 
+    // Bot 攻击机制
     if (dist <= 3.2f && b->attackCooldown == 0) {
         Vector3 botEyePos = { b->position.x, b->position.y + 1.5f, b->position.z };
-        Vector3 botDir = { fX, 0.0f, fZ };
 
         bool hasLineOfSight = false;
         if (b->targetId == -1) {
-            BoundingBox pBox = { {player.position.x - 0.32f, player.position.y, player.position.z - 0.32f}, {player.position.x + 0.32f, player.position.y + 1.8f, player.position.z + 0.32f} };
             float hitD = 0.0f;
-            if (RayIntersectsBox(botEyePos, botDir, pBox, &hitD) && hitD <= 3.5f) {
+            if (RayIntersectsBox(botEyePos, dir, player.GetAABB(), &hitD) && hitD <= 3.5f) {
                 hasLineOfSight = true;
             }
         }
         else {
             Bot* targetBot = &bots[b->targetId];
             if (!targetBot->isDead) {
-                BoundingBox tBox = GetBotBoundingBox(targetBot);
                 float hitD = 0.0f;
-                if (RayIntersectsBox(botEyePos, botDir, tBox, &hitD) && hitD <= 3.5f) {
+                if (RayIntersectsBox(botEyePos, dir, targetBot->GetAABB(), &hitD) && hitD <= 3.5f) {
                     hasLineOfSight = true;
                 }
             }
@@ -671,15 +701,15 @@ void UpdateBot(int botIndex) {
             bool isAxe = (b->activeSlot == 3);
             bool isMace = (b->activeSlot == 2);
 
-            b->attackCooldown = 30;
+            b->attackCooldown = 28;
             b->isSwinging = true;
             PlayGameSound("swing.wav");
 
             if (b->targetId == -1) {
-                bool playerIsShielding = (player.isBlocking || (player.offhand.type == ITEM_SHIELD && player.isBlocking)) && player.shieldCooldown == 0;
+                bool playerIsShielding = player.isBlocking && player.shieldCooldown == 0;
                 if (playerIsShielding) {
                     if (isAxe || isMace) {
-                        player.shieldCooldown = 90;
+                        player.shieldCooldown = 100; // 破盾 5 秒
                         player.isBlocking = false;
                     }
                     else {
@@ -692,9 +722,9 @@ void UpdateBot(int botIndex) {
                     else { dmg -= player.absorption; player.absorption = 0.0f; }
                 }
                 player.health -= dmg;
-                player.velocity.y = 0.15f;
-                player.velocity.x += fX * (isAxe ? 0.35f : 0.12f);
-                player.velocity.z += fZ * (isAxe ? 0.35f : 0.12f);
+                player.velocity.y = 0.16f;
+                player.velocity.x += dir.x * (isAxe ? 0.35f : 0.15f);
+                player.velocity.z += dir.z * (isAxe ? 0.35f : 0.15f);
 
                 PlayGameSound("hit.wav");
                 if (player.health <= 0) {
@@ -709,7 +739,7 @@ void UpdateBot(int botIndex) {
                     bool targetShielding = targetBot->isBlocking && targetBot->shieldCooldown == 0;
                     if (targetShielding) {
                         if (isAxe || isMace) {
-                            targetBot->shieldCooldown = 90;
+                            targetBot->shieldCooldown = 100;
                             targetBot->isBlocking = false;
                         }
                         else {
@@ -724,8 +754,8 @@ void UpdateBot(int botIndex) {
                     targetBot->health -= dmg;
                     targetBot->hitStunTimer = 15;
                     targetBot->velocity.y = 0.18f;
-                    targetBot->velocity.x += fX * (isAxe ? 0.35f : 0.15f);
-                    targetBot->velocity.z += fZ * (isAxe ? 0.35f : 0.15f);
+                    targetBot->velocity.x += dir.x * (isAxe ? 0.35f : 0.15f);
+                    targetBot->velocity.z += dir.z * (isAxe ? 0.35f : 0.15f);
                     PlayGameSound("hit.wav");
                     SpawnParticleEx(targetBot->position.x, targetBot->position.y + 1.0f, targetBot->position.z, 0.9f, 0.1f, 0.1f, false);
                 }
@@ -755,9 +785,7 @@ void CheckCollisions() {
                 }
             }
 
-            float pdist = sqrtf(powf(player.position.x - droppedItems[i].position.x, 2) +
-                powf((player.position.y + 0.9f) - droppedItems[i].position.y, 2) +
-                powf(player.position.z - droppedItems[i].position.z, 2));
+            float pdist = (player.position - droppedItems[i].position).Length();
             if (pdist < 1.5f) {
                 for (int s = 0; s < 9; s++) {
                     if (player.hotbar[s].type == droppedItems[i].type && player.hotbar[s].count < player.hotbar[s].maxStack) {
@@ -846,7 +874,8 @@ public:
         player.maxAttackCooldown = 18;
         player.isMining = false;
         player.miningProgress = 0;
-        player.fallDistance = 0.0f;
+        player.lastLandY = 10.0f;
+        player.isGrounded = false;
         player.thirdPersonView = false;
 
         for (int i = 0; i < 10; i++) player.hotbar[i] = { ITEM_NONE, 0, 64 };
@@ -885,9 +914,7 @@ public:
 
                 for (int i = 0; i < MAX_PARTICLES; i++) {
                     if (particles[i].active) {
-                        particles[i].position.x += particles[i].velocity.x;
-                        particles[i].position.y += particles[i].velocity.y;
-                        particles[i].position.z += particles[i].velocity.z;
+                        particles[i].position += particles[i].velocity;
                         particles[i].velocity.y -= 0.015f;
                         particles[i].life--;
                         if (particles[i].life <= 0) particles[i].active = false;
@@ -930,13 +957,11 @@ public:
                     gluLookAt(player.position.x, player.position.y + eyeHeight, player.position.z, lookX, lookY, lookZ, 0.0f, 1.0f, 0.0f);
                 }
 
-                DrawWorldOptimized(); // 渲染性能分级地形
+                DrawWorldOptimized();
                 DrawDroppedItems();
 
-                float rayYaw = player.yaw * ((float)M_PI / 180.0f);
-                float rayPitch = player.pitch * ((float)M_PI / 180.0f);
                 Vector3 rOrigin = { player.position.x, player.position.y + eyeHeight, player.position.z };
-                Vector3 rDir = { sinf(rayYaw) * cosf(rayPitch), sinf(rayPitch), -cosf(rayYaw) * cosf(rayPitch) };
+                Vector3 rDir = { sinf(yawRad) * cosf(pitchRad), sinf(pitchRad), -cosf(yawRad) * cosf(pitchRad) };
                 int hitX, hitY, hitZ, prevX, prevY, prevZ;
                 if (RayCastBlock(rOrigin, rDir, 5.0f, &hitX, &hitY, &hitZ, &prevX, &prevY, &prevZ)) {
                     DrawWireBox((float)hitX - (float)(WORLD_SIZE / 2), (float)hitY - 4.0f, (float)hitZ - (float)(WORLD_SIZE / 2), 1.02f, 1.02f, 1.02f, 1.0f, 1.0f, 1.0f);
@@ -949,7 +974,7 @@ public:
                     Bot dummyPlayer = { 0 };
                     dummyPlayer.health = player.health;
                     dummyPlayer.absorption = player.absorption;
-                    DrawMCCharacter(&dummyPlayer, player.swingAnim, player.isBlocking || (player.offhand.type == ITEM_SHIELD && player.isBlocking), player.selectedSlot);
+                    DrawMCCharacter(&dummyPlayer, player.swingAnim, player.isBlocking, player.selectedSlot);
                     glPopMatrix();
                 }
 
@@ -964,7 +989,7 @@ public:
                     if (showDebugHitboxes) {
                         glPushMatrix();
                         glTranslatef(0.0f, 0.9f, 0.0f);
-                        DrawWireBox(0.0f, 0.0f, 0.0f, 0.64f, 1.82f, 0.64f, 1.0f, 0.2f, 0.2f);
+                        DrawWireBox(0.0f, 0.0f, 0.0f, 0.6f, 1.8f, 0.6f, 1.0f, 0.2f, 0.2f);
                         glPopMatrix();
                     }
 
@@ -1011,7 +1036,7 @@ public:
 };
 
 /**************************
- * 输入与机制逻辑处理
+ * 玩家物理输入与下落重置
  **************************/
 void ProcessInput() {
     float rad = player.yaw * ((float)M_PI / 180.0f);
@@ -1039,53 +1064,56 @@ void ProcessInput() {
     player.velocity.z *= 0.54f;
     player.velocity.y -= 0.025f;
 
-    if (player.isCrouching) {
-        float nextX = player.position.x + player.velocity.x;
-        float nextZ = player.position.z + player.velocity.z;
-        int footX = (int)floorf(nextX + (float)(WORLD_SIZE / 2) + 0.5f);
-        int footY = (int)floorf(player.position.y + 4.0f - 0.1f + 0.5f);
-        int footZ = (int)floorf(nextZ + (float)(WORLD_SIZE / 2) + 0.5f);
-
-        bool hasGroundAhead = true;
-        if (footX >= 0 && footX < WORLD_SIZE && footY >= 0 && footY < WORLD_HEIGHT && footZ >= 0 && footZ < WORLD_SIZE) {
-            if (world[footX][footY][footZ].type == 0) {
-                hasGroundAhead = false;
-            }
-        }
-        if (!hasGroundAhead) {
+    // 潜行边缘防跌落逻辑
+    if (player.isCrouching && player.isGrounded) {
+        Vector3 nextPos = player.position + player.velocity;
+        BoundingBox testBox = {
+            { nextPos.x - 0.3f, nextPos.y - 0.2f, nextPos.z - 0.3f },
+            { nextPos.x + 0.3f, nextPos.y, nextPos.z + 0.3f }
+        };
+        if (!CheckAABBCollisionWithWorld(testBox)) {
             player.velocity.x = 0.0f;
             player.velocity.z = 0.0f;
         }
     }
 
+    // X 轴运动碰撞
     player.position.x += player.velocity.x;
-    if (CheckBoxCollisionWithWorld(player.position.x, player.position.y, player.position.z, 0.64f, 1.8f)) {
+    if (CheckAABBCollisionWithWorld(player.GetAABB())) {
         player.position.x -= player.velocity.x;
         player.velocity.x = 0.0f;
     }
 
+    // Z 轴运动碰撞
     player.position.z += player.velocity.z;
-    if (CheckBoxCollisionWithWorld(player.position.x, player.position.y, player.position.z, 0.64f, 1.8f)) {
+    if (CheckAABBCollisionWithWorld(player.GetAABB())) {
         player.position.z -= player.velocity.z;
         player.velocity.z = 0.0f;
     }
 
-    float prevY = player.position.y;
+    // Y 轴运动碰撞与下落起点重置
     player.position.y += player.velocity.y;
-    if (CheckBoxCollisionWithWorld(player.position.x, player.position.y, player.position.z, 0.64f, player.isCrouching ? 1.35f : 1.8f)) {
+    if (CheckAABBCollisionWithWorld(player.GetAABB())) {
         player.position.y -= player.velocity.y;
         if (player.velocity.y < 0.0f) {
-            player.fallDistance = prevY - player.position.y;
+            player.isGrounded = true;
+            player.lastLandY = player.position.y; // 触地时重置下落还原点起点
         }
         player.velocity.y = 0.0f;
+    } else {
+        if (player.isGrounded && player.velocity.y < 0.0f) {
+            player.isGrounded = false;
+            player.lastLandY = player.position.y; // 刚离开地面下落，锁定最高起点
+        }
     }
 
+    // 吃金苹果逻辑
     if (GetAsyncKeyState('E') & 0x8000) {
         ItemType activeItem = player.hotbar[player.selectedSlot].type;
         if (activeItem == ITEM_GOLDEN_APPLE && player.hotbar[player.selectedSlot].count > 0) {
             player.eatTimer++;
             if (player.eatTimer >= player.eatDurationNeeded) {
-                player.health = (player.health + 4.0f < 20.0f) ? (player.health + 4.0f) : 20.0f;
+                player.health = min(20.0f, player.health + 4.0f);
                 player.absorption = 8.0f;
                 player.hotbar[player.selectedSlot].count--;
                 if (player.hotbar[player.selectedSlot].count <= 0) player.hotbar[player.selectedSlot].type = ITEM_NONE;
@@ -1093,11 +1121,11 @@ void ProcessInput() {
                 player.eatTimer = 0;
             }
         }
-    }
-    else {
+    } else {
         player.eatTimer = 0;
     }
 
+    // 挖掘逻辑
     if ((GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0) {
         float yawRad = player.yaw * ((float)M_PI / 180.0f);
         float pitchRad = player.pitch * ((float)M_PI / 180.0f);
@@ -1122,20 +1150,18 @@ void ProcessInput() {
                 player.isMining = false;
                 player.miningProgress = 0;
             }
-        }
-        else {
+        } else {
             player.isMining = false;
             player.miningProgress = 0;
         }
-    }
-    else {
+    } else {
         player.isMining = false;
         player.miningProgress = 0;
     }
 }
 
 /**************************
- * HUD 与进度条渲染
+ * UI 与 HUD 绘制
  **************************/
 void DrawHUD() {
     for (int i = 0; i < 9; i++) {
@@ -1144,8 +1170,7 @@ void DrawHUD() {
         if (player.selectedSlot == i) {
             DrawBox(bx, by, 0.0f, 0.082f, 0.082f, 0.01f, 0.95f, 0.95f, 0.95f);
             DrawBox(bx, by, 0.0f, 0.072f, 0.072f, 0.01f, 0.18f, 0.18f, 0.18f);
-        }
-        else {
+        } else {
             DrawBox(bx, by, 0.0f, 0.075f, 0.075f, 0.01f, 0.12f, 0.12f, 0.12f);
         }
 
@@ -1182,8 +1207,7 @@ void DrawHUD() {
         float hy = -0.72f;
         if (i < hearts) {
             DrawBox(hx, hy, 0.0f, 0.03f, 0.035f, 0.01f, 0.95f, 0.15f, 0.15f);
-        }
-        else {
+        } else {
             DrawBox(hx, hy, 0.0f, 0.03f, 0.035f, 0.01f, 0.22f, 0.22f, 0.22f);
         }
     }
@@ -1201,13 +1225,16 @@ void DrawHUD() {
     }
 }
 
-LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
-{
-    switch (message)
-    {
-    case WM_CLOSE: PostQuitMessage(0); return 0;
-    case WM_MOUSEMOVE:
-    {
+/**************************
+ * 窗口消息回调与 PvP 逻辑
+ **************************/
+LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) {
+    switch (message) {
+    case WM_CLOSE:
+        PostQuitMessage(0);
+        return 0;
+
+    case WM_MOUSEMOVE: {
         RECT rect; POINT pt, centerPt;
         GetClientRect(hWnd, &rect);
         int cx = (rect.right - rect.left) / 2;
@@ -1223,27 +1250,35 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         }
         return 0;
     }
-    case WM_KEYDOWN:
-    {
+
+    case WM_KEYDOWN: {
         WPARAM key = wParam;
         if (key == VK_ESCAPE) PostQuitMessage(0);
         if (key == 'R' || key == 'r') showDebugHitboxes = !showDebugHitboxes;
-        if (key == 'T' || key == 't') { // 按 T 键动态切换性能渲染等级（低/中/高）
+        if (key == 'T' || key == 't') {
             if (currentRenderQuality == QUALITY_HIGH) currentRenderQuality = QUALITY_MEDIUM;
             else if (currentRenderQuality == QUALITY_MEDIUM) currentRenderQuality = QUALITY_LOW;
             else currentRenderQuality = QUALITY_HIGH;
         }
         if (key == VK_F5) player.thirdPersonView = !player.thirdPersonView;
-        if (key >= '1' && key <= '9') player.selectedSlot = (int)(key - '1');
+        if (key >= '1' && key <= '9') {
+            player.selectedSlot = (int)(key - '1');
+            // 根据物品类型重置不同的攻击冷却频率
+            ItemType sel = player.hotbar[player.selectedSlot].type;
+            if (sel == ITEM_NETHERITE_AXE) player.maxAttackCooldown = 25; // 斧头慢速
+            else if (sel == ITEM_MACE) player.maxAttackCooldown = 30;         // 重锤最慢
+            else player.maxAttackCooldown = 16;                              // 剑类快速
+        }
         if (key == VK_SPACE) {
-            if (player.velocity.y <= 0.001f && player.velocity.y >= -0.05f) {
+            if (player.isGrounded) {
                 player.velocity.y = 0.38f;
+                player.isGrounded = false;
             }
         }
         return 0;
     }
-    case WM_LBUTTONDOWN:
-    {
+
+    case WM_LBUTTONDOWN: {
         player.isSwinging = true;
         player.swingAnim = 0;
         PlayGameSound("swing.wav");
@@ -1263,9 +1298,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 
         for (auto& bot : bots) {
             if (bot.isDead) continue;
-            BoundingBox box = GetBotBoundingBox(&bot);
             float hitDist = 0.0f;
-            if (RayIntersectsBox(rayOrigin, rayDir, box, &hitDist)) {
+            if (RayIntersectsBox(rayOrigin, rayDir, bot.GetAABB(), &hitDist)) {
                 if (hitDist > 0.0f && hitDist <= 4.5f && hitDist < minHitDist) {
                     minHitDist = hitDist;
                     hitBot = &bot;
@@ -1281,40 +1315,47 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 
             if (activeItem == ITEM_DIAMOND_SWORD) baseDmg = 7.0f;
             else if (activeItem == ITEM_NETHERITE_SWORD) baseDmg = 9.0f;
-            else if (isAxe) baseDmg = 5.5f;
+            else if (isAxe) baseDmg = 6.0f;
             else if (isMace) {
-                // 修改点：只要玩家下落高度/滞空差值高于 0.3 格，即触发重锤风爆弹飞机制！
-                if (player.fallDistance > 0.3f) {
+                // 计算精确累计下落落差
+                float fallDist = player.lastLandY - player.position.y;
+                if (!player.isGrounded && fallDist > 0.5f) {
                     isWindBurst = true;
-                    baseDmg = 6.0f + player.fallDistance * 25.0f; // 根据滞空高度造成巨额伤害
-                    player.velocity.y = 0.75f; // 强力反弹向上
+                    baseDmg = 7.0f + fallDist * 6.5f; // 重锤经典伤害公式
+                    
+                    // 1. 重锤还原点/风爆机制：重置玩家下落状态，反弹弹飞玩家
+                    player.velocity.y = 0.65f;
+                    player.lastLandY = player.position.y; // 重置下落还原点，防止玩家承受跌落伤害
+                    
                     SpawnWindBurstParticles(hitBot->position.x, hitBot->position.y + 1.0f, hitBot->position.z);
                     PlayGameSound("wind_burst.wav");
-                }
-                else {
+                } else {
                     baseDmg = 5.0f;
                 }
             }
 
-            bool isJumpCrit = (player.velocity.y < -0.01f || isWindBurst);
-            if (isJumpCrit) {
-                baseDmg *= isAxe ? 2.2f : 1.6f;
+            // 触发 1.21/Java PvP 跳击暴击条件
+            bool isJumpCrit = (!player.isGrounded && player.velocity.y < -0.001f) || isWindBurst;
+            if (isJumpCrit && !isWindBurst) {
+                baseDmg *= 1.5f;
                 SpawnJumpCritParticles(hitBot->position.x, hitBot->position.y + 1.2f, hitBot->position.z);
                 PlayGameSound("hit.wav");
             }
 
+            // 破盾机制
             bool botIsShielding = hitBot->isBlocking && hitBot->shieldCooldown == 0;
             if (botIsShielding) {
                 if (isAxe || isMace) {
-                    hitBot->shieldCooldown = 90;
+                    hitBot->shieldCooldown = 100; // 破盾 5 秒
                     hitBot->isBlocking = false;
                     PlayGameSound("hit.wav");
-                }
-                else {
+                    baseDmg *= 0.2f; // 破盾时造成少许贯穿伤害
+                } else {
                     baseDmg = 0.0f;
                 }
             }
 
+            // 伤害吸收心计算
             if (hitBot->absorption > 0.0f && baseDmg > 0.0f) {
                 if (hitBot->absorption >= baseDmg) { hitBot->absorption -= baseDmg; baseDmg = 0.0f; }
                 else { baseDmg -= hitBot->absorption; hitBot->absorption = 0.0f; }
@@ -1323,21 +1364,19 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             hitBot->health -= baseDmg;
             hitBot->hitStunTimer = 15;
 
-            // 如果触发重锤高于0.3格风爆，目标被猛烈弹飞！
+            // 击退向量计算
             if (isMace && isWindBurst) {
-                hitBot->velocity.y = 0.95f; // 极大击飞高度
-                hitBot->velocity.x += rayDir.x * 0.75f;
-                hitBot->velocity.z += rayDir.z * 0.75f;
-            }
-            else if (isAxe) {
-                hitBot->velocity.y = 0.28f;
+                hitBot->velocity.y = 0.85f; // 重锤特有超级垂直击飞
+                hitBot->velocity.x += rayDir.x * 0.7f;
+                hitBot->velocity.z += rayDir.z * 0.7f;
+            } else if (isAxe) {
+                hitBot->velocity.y = 0.22f;
                 hitBot->velocity.x += rayDir.x * 0.45f;
                 hitBot->velocity.z += rayDir.z * 0.45f;
-            }
-            else {
-                hitBot->velocity.y = 0.22f;
-                hitBot->velocity.x += rayDir.x * 0.22f;
-                hitBot->velocity.z += rayDir.z * 0.22f;
+            } else {
+                hitBot->velocity.y = 0.18f;
+                hitBot->velocity.x += rayDir.x * 0.25f;
+                hitBot->velocity.z += rayDir.z * 0.25f;
             }
 
             comboCount++;
@@ -1347,14 +1386,13 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         }
         return 0;
     }
-    case WM_RBUTTONDOWN:
-    {
+
+    case WM_RBUTTONDOWN: {
         ItemType activeItem = player.hotbar[player.selectedSlot].type;
         if (activeItem != ITEM_BLOCK_GRASS && activeItem != ITEM_BLOCK_STONE) {
             if (player.offhand.type == ITEM_BLOCK_GRASS || player.offhand.type == ITEM_BLOCK_STONE) {
                 activeItem = player.offhand.type;
-            }
-            else {
+            } else {
                 if (player.shieldCooldown == 0) {
                     player.isBlocking = true;
                 }
@@ -1379,15 +1417,12 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                         float by = (float)pY - 4.0f;
                         float bz = (float)pZ - (float)(WORLD_SIZE / 2);
 
-                        float pMinX = player.position.x - 0.32f, pMaxX = player.position.x + 0.32f;
-                        float pMinZ = player.position.z - 0.32f, pMaxZ = player.position.z + 0.32f;
-                        float pMinY = player.position.y, pMaxY = player.position.y + 1.8f;
+                        BoundingBox testBlockBox = {
+                            { bx - 0.5f, by - 0.5f, bz - 0.5f },
+                            { bx + 0.5f, by + 0.5f, bz + 0.5f }
+                        };
 
-                        bool collidesWithPlayer = (pMinX < bx + 0.5f && pMaxX > bx - 0.5f &&
-                            pMinY < by + 0.5f && pMaxY > by - 0.5f &&
-                            pMinZ < bz + 0.5f && pMaxZ > bz - 0.5f);
-
-                        if (!collidesWithPlayer) {
+                        if (!player.GetAABB().Intersects(testBlockBox)) {
                             world[pX][pY][pZ].type = (activeItem == ITEM_BLOCK_STONE) ? 3 : 1;
                             world[pX][pY][pZ].r = (activeItem == ITEM_BLOCK_STONE) ? 0.42f : 0.35f;
                             world[pX][pY][pZ].g = (activeItem == ITEM_BLOCK_STONE) ? 0.42f : 0.65f;
@@ -1406,13 +1441,18 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         }
         return 0;
     }
-    case WM_RBUTTONUP: player.isBlocking = false; return 0;
-    default: return DefWindowProc(hWnd, message, wParam, lParam);
+
+    case WM_RBUTTONUP:
+        player.isBlocking = false;
+        return 0;
+
+    default:
+        return DefWindowProc(hWnd, message, wParam, lParam);
     }
 }
 
 /**************************
- * 渲染函数：手臂与武器
+ * 手部与模型绘制
  **************************/
 void DrawPlayerFirstPersonHands() {
     glPushMatrix();
@@ -1445,11 +1485,10 @@ void DrawPlayerFirstPersonHands() {
     if (player.offhand.type != ITEM_NONE) {
         glPushMatrix();
         glTranslatef(-0.48f, -0.38f, -0.55f);
-        if ((player.isBlocking || player.offhand.type == ITEM_SHIELD && player.isBlocking) && player.shieldCooldown == 0) {
+        if (player.isBlocking && player.shieldCooldown == 0) {
             glRotatef(-30.0f, 1.0f, 0.0f, 0.0f);
             glRotatef(20.0f, 0.0f, 0.0f, 1.0f);
-        }
-        else {
+        } else {
             glRotatef(15.0f, 1.0f, 0.0f, 0.0f);
         }
         DrawBox(0.0f, -0.15f, 0.0f, 0.15f, 0.45f, 0.15f, 0.88f, 0.72f, 0.58f);
@@ -1480,8 +1519,7 @@ void DrawMCCharacter(Bot* b, int swingFrame, bool isBotBlocking, int itemInHand)
     if (isBotBlocking && b->shieldCooldown == 0) {
         glRotatef(-50.0f, 1.0f, 0.0f, 0.0f);
         glRotatef(35.0f, 0.0f, 0.0f, 1.0f);
-    }
-    else if (swingFrame > 0) {
+    } else if (swingFrame > 0) {
         float ang = sinf((float)swingFrame / 10.0f * (float)M_PI) * -70.0f;
         glRotatef(ang, 1.0f, 0.0f, 0.0f);
     }
@@ -1574,9 +1612,6 @@ void DisableOpenGL(HWND hWnd, HDC hDC, HGLRC hRC) {
     ReleaseDC(hWnd, hDC);
 }
 
-/**********************************************************
- * WinMain 入口
- *********************************----------------*********/
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int iCmdShow) {
     MinecraftGameEngine game;
     if (!game.Initialize(hInstance, iCmdShow)) {
